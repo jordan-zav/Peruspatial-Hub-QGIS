@@ -14,27 +14,37 @@ PeruSpatial Hub se distribuye bajo la GNU General Public License v3.0. Puede usa
 
 ## 🚀 Características Principales
 
-1. **Catálogo Unificado**: Más de 40 servicios GIS precargados y clasificados por institución y temática (Catastro, Minería, Hidrografía, Medio Ambiente, Riesgos, Arqueología).
+1. **Catálogo Unificado**: Directorios GIS oficiales verificados y clasificados por institución y temática. Cada directorio descubre dinámicamente los servicios que la institución publica en ese momento.
 2. **Buscador Inteligente**: Filtra en tiempo real por palabras clave (ej: "sismos", "concesiones", "cuencas") y por categoría.
-3. **Carga Inmediata**: Haz doble clic en cualquier servicio del catálogo para añadirlo al lienzo de mapas de QGIS (soporta ArcGIS MapServer, FeatureServer, WMS y WFS).
+3. **Carga de Capas REST**: Expande un servicio ArcGIS y haz doble clic en una subcapa para cargarla mediante el proveedor raster o vectorial correspondiente. Las conexiones WMS se registran en el panel Explorador de QGIS para seleccionar allí sus capas publicadas.
 4. **Integración con el Explorador de QGIS**: Registra de forma individual o masiva todas las conexiones oficiales del catálogo directamente en el panel **Explorador** nativo de QGIS (bajo las categorías WMS/WMTS y ArcGIS REST).
 5. **Asistente de Precisión de CRS / Datum**: Panel de advertencia dinámico que le guiará para evitar errores al trabajar con datums mixtos (especialmente la transformación del datum histórico **PSAD56** al moderno **WGS84 / SIRGAS UTM**), garantizando la precisión métrica obligatoria en trabajos arqueológicos y geofísicos.
+6. **Estado Transparente de Fuentes**: El botón de información junto al buscador explica qué instituciones fueron investigadas, cuáles presentan fallas técnicas y cuáles requieren identificación. También documenta la exploración futura de accesos autenticados mediante mecanismos oficiales y seguros.
 
 ---
 
-## 📂 Servidores de Información Integrados
+## 📂 Servidores de información integrados y verificados
 
-*   **INGEMMET (GEOCATMIN)**: Catastro minero, atlas geoquímico, volcanes, peligros geológicos, aeromagnetometría geofísica regional.
-*   **IGN (Instituto Geográfico Nacional)**: Límites departamentales/provinciales/distritales, red de vías, hidrografía nacional y toponimia a escala 1:100,000.
-*   **ANA (Autoridad Nacional del Agua)**: Delimitación de unidades hidrográficas (cuencas), red de ríos, inventario de lagunas y glaciares.
-*   **IGP (Instituto Geofísico del Perú)**: Sismos históricos y fallas activas.
-*   **MINAM y SERNANP**: Áreas Naturales Protegidas (ANP), zonas de amortiguamiento, ecosistemas y Zonificación Ecológica Económica (ZEE).
-*   **SERFOR**: Cobertura forestal y concesiones madereras.
-*   **MINCUL (Ministerio de Cultura)**: Monumentos y zonas arqueológicas, áreas CIRA declaradas Patrimonio Cultural de la Nación.
-*   **CENEPRED**: Mapas de susceptibilidad a inundaciones y movimientos en masa (huaicos).
-*   **SUNARP y COFOPRI**: Consulta catastral de predios y sectores urbanos.
-*   **OSINERGMIN**: Líneas de transmisión eléctrica, oleoductos y gasoductos.
-*   **OEFA**: Monitoreo de calidad ambiental y pasivos ambientales.
+La disponibilidad indicada fue comprobada el 15 de julio de 2026. Como son servicios externos administrados por cada institución, pueden cambiar o quedar temporalmente fuera de línea sin previo aviso.
+
+*   **INGEMMET (GEOCATMIN)**: dos directorios ArcGIS REST activos con catastro minero, geología, geoquímica y otros servicios publicados por la institución.
+*   **IGN e IDEP**: cartografía nacional y directorios institucionales publicados mediante ArcGIS REST.
+*   **ANA mediante IDEP**: servicio institucional con humedales costeros, manantiales, glaciares, estaciones hidrometeorológicas y unidades hidrográficas.
+*   **IGP**: conexión WMS oficial registrable en el panel Explorador de QGIS. Las capas disponibles dependen del catálogo publicado por el IGP.
+*   **MINAM**: directorio ArcGIS REST del Geoservidor MINAM, con servicios ambientales y de zonificación publicados actualmente.
+*   **SERNANP**: directorio ArcGIS REST con gestión, monitoreo y cartografía de áreas naturales protegidas.
+*   **SERFOR**: nuevo directorio oficial de GeoSERFOR con servicios forestales, imágenes, geoprocesamiento y visor.
+*   **Ministerio de Cultura**: directorio oficial SIGDA con los servicios que la institución mantiene publicados.
+*   **OSINERGMIN**: Mapa Energético Minero con servicios de electricidad, gas natural, hidrocarburos, minería y cartografía.
+*   **OEFA**: directorio PIFA con servicios públicos de monitoreo, fiscalización, emergencias ambientales, vigilancia y datos interoperables.
+
+### Fuentes no integradas actualmente
+
+*   **CENEPRED**: el visor SIGRID ofrece acceso mediante cuenta o correo, pero su ArcGIS Web Adaptor indicó que no podía acceder a ningún servidor interno durante la verificación. No se trata simplemente de una solicitud de login REST.
+*   **COFOPRI**: el dominio histórico responde con una cadena de certificado incompleta y el endpoint REST devuelve 404. No se integrará desactivando la validación TLS.
+*   **SUNARP**: el Visor BGR requiere DNI vigente, fecha de emisión y captcha. No existe un directorio REST anónimo verificado que el plugin pueda registrar responsablemente.
+
+El botón de información de la interfaz mantiene este diagnóstico visible dentro de QGIS. Se continuarán investigando nuevas URL oficiales y mecanismos de autenticación permitidos; el plugin no incluirá ni almacenará directamente credenciales de usuario.
 
 ---
 
