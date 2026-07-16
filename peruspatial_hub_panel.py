@@ -16,14 +16,11 @@ import unicodedata
 from qgis.PyQt.QtCore import Qt, QSize, QTimer
 from qgis.PyQt.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QLineEdit, QComboBox, QTreeWidget, QTreeWidgetItem, QPushButton,
+    QLineEdit, QComboBox, QTreeWidget, QTreeWidgetItem, QPushButton, QToolButton,
     QLabel, QTextBrowser, QMessageBox, QSplitter, QDialog, QDialogButtonBox
 )
 from qgis.PyQt.QtGui import QFont, QColor, QClipboard, QIcon, QPixmap
 from qgis.core import QgsSettings, QgsRasterLayer, QgsVectorLayer, QgsProject, QgsDataSourceUri, QgsCoordinateReferenceSystem
-
-from .services_db import SERVICES
-
 
 ARCGIS_SERVICE_TYPES = {
     "arcgis_mapserver": "MapServer",
@@ -35,9 +32,27 @@ ACTIVE_REST_ROOTS = {
     "https://geocatmin.ingemmet.gob.pe/arcgis/rest/services",
     "https://geocatmin.ingemmet.gob.pe/arcgis/rest/services/WGS84_18",
     "https://www.idep.gob.pe/geoportal/rest/services/SERVICIOS_IGN",
+    "https://www.idep.gob.pe/geoportal/rest/services/INSTITUCIONALES",
     "https://geoservicios.sernanp.gob.pe/arcgis/rest/services",
     "https://geoservidorperu.minam.gob.pe/arcgis/rest/services",
+    "https://geo.serfor.gob.pe/geoservicios/rest/services",
+    "https://sigda.cultura.gob.pe/sigda/rest/services",
+    "https://gisem.osinergmin.gob.pe/serverosih/rest/services",
+    "https://pifa.oefa.gob.pe/arcgis/rest/services",
 }
+
+ACTIVE_WMS_ROOTS = {
+    "https://ide.igp.gob.pe/geoserver/ows",
+}
+
+CATALOG_CATEGORIES = [
+    "Arqueología y Cultura",
+    "Clima y Riesgos",
+    "Geología y Minería",
+    "Hidrología y Agua",
+    "Límites y Cartografía",
+    "Medio Ambiente",
+]
 
 MAX_HTTP_RESPONSE_BYTES = 20 * 1024 * 1024
 
@@ -146,6 +161,53 @@ class AboutDialog(QDialog):
         self.setStyleSheet(
             "QDialog { background-color: white; } QLabel { color: #333; }"
         )
+
+
+class ServiceStatusDialog(QDialog):
+    """Explains why researched institutions may not appear in the catalog."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Estado de servicios investigados")
+        self.setMinimumSize(560, 430)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 12)
+        layout.setSpacing(10)
+
+        title = QLabel("<h2>Servicios investigados</h2>")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+
+        details = QTextBrowser()
+        details.setOpenExternalLinks(True)
+        details.setHtml(
+            "<p>PeruSpatial Hub revisó estas instituciones. Si alguna no aparece como "
+            "conexión disponible, no significa que haya sido omitida sin investigación.</p>"
+            "<ul>"
+            "<li><b>OEFA:</b> el directorio público PIFA está operativo y ya se encuentra "
+            "integrado en el catálogo.</li>"
+            "<li><b>SUNARP:</b> el Visor BGR solicita DNI, fecha de emisión y captcha. "
+            "No se encontró un directorio REST anónimo verificado para integrarlo como "
+            "las demás conexiones.</li>"
+            "<li><b>CENEPRED:</b> SIGRID dispone de acceso de usuario, pero actualmente "
+            "el ArcGIS Web Adaptor público informa que no puede comunicarse con su "
+            "servidor interno. Iniciar sesión no corrige esa falla del servicio REST.</li>"
+            "<li><b>COFOPRI:</b> el servidor conocido presenta problemas de validación "
+            "del certificado TLS y la ruta REST consultada responde HTTP 404. Por "
+            "seguridad, el plugin no desactiva la validación de certificados.</li>"
+            "</ul>"
+            "<p><b>Trabajo futuro:</b> se continuarán explorando nuevas URL oficiales y "
+            "la posible integración de servicios con inicio de sesión, siempre que exista "
+            "un mecanismo autorizado y seguro. Las credenciales no se incluirán ni se "
+            "guardarán directamente en el plugin.</p>"
+            "<p><i>Estado revisado para la versión 1.0.0.</i></p>"
+        )
+        layout.addWidget(details)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
 
 
 class PeruSpatialHubPanel(QDockWidget):
@@ -282,12 +344,21 @@ class PeruSpatialHubPanel(QDockWidget):
 
         self.category_combo = QComboBox()
         self.category_combo.addItem("Todas las Categorías")
-        categories = sorted(list(set(s["category"] for s in SERVICES)))
-        self.category_combo.addItems(categories)
+        self.category_combo.addItems(CATALOG_CATEGORIES)
         self.category_combo.setFixedWidth(130)
+
+        self.btn_service_status = QToolButton()
+        self.btn_service_status.setText("ⓘ")
+        self.btn_service_status.setToolTip(
+            "Ver el estado de instituciones y servicios investigados"
+        )
+        self.btn_service_status.setAccessibleName("Información de servicios investigados")
+        self.btn_service_status.setFixedSize(30, 30)
+        self.btn_service_status.clicked.connect(self.show_service_status_dialog)
 
         layout.addWidget(self.search_input)
         layout.addWidget(self.category_combo)
+        layout.addWidget(self.btn_service_status)
 
     def init_tree_widget(self):
         """Creates tree widget for service categories and list."""
@@ -390,6 +461,11 @@ class PeruSpatialHubPanel(QDockWidget):
         dialog = AboutDialog(self, self.plugin_dir)
         dialog.exec()
 
+    def show_service_status_dialog(self):
+        """Shows the research status of unavailable or restricted services."""
+        dialog = ServiceStatusDialog(self)
+        dialog.exec()
+
     def fetch_arcgis_json(self, url, timeout=15, attempts=2):
         """Read ArcGIS REST metadata with one retry for intermittent public servers."""
         request_url = _url_with_json(url)
@@ -472,9 +548,16 @@ class PeruSpatialHubPanel(QDockWidget):
                 "category": "Límites y Cartografía"
             },
             {
+                "institution": "IDEP (ANA y otras instituciones)",
+                "name": "Servicios Institucionales Oficiales (REST)",
+                "url": "https://www.idep.gob.pe/geoportal/rest/services/INSTITUCIONALES",
+                "stype": "arcgis_rest",
+                "category": "Hidrología y Agua"
+            },
+            {
                 "institution": "MINCUL",
                 "name": "MINCUL Patrimonio y Arqueología (REST)",
-                "url": "https://geoservicios.cultura.gob.pe/arcgis/rest/services",
+                "url": "https://sigda.cultura.gob.pe/sigda/rest/services",
                 "stype": "arcgis_rest",
                 "category": "Arqueología y Cultura",
                 "crs_warning": True
@@ -489,7 +572,7 @@ class PeruSpatialHubPanel(QDockWidget):
             {
                 "institution": "SERFOR",
                 "name": "SERFOR Catastro Forestal (REST)",
-                "url": "https://geoservicios.serfor.gob.pe/arcgis/rest/services",
+                "url": "https://geo.serfor.gob.pe/geoservicios/rest/services",
                 "stype": "arcgis_rest",
                 "category": "Medio Ambiente"
             },
@@ -501,39 +584,18 @@ class PeruSpatialHubPanel(QDockWidget):
                 "category": "Medio Ambiente"
             },
             {
-                "institution": "CENEPRED",
-                "name": "CENEPRED Gestión de Riesgos (REST)",
-                "url": "https://sigrid.cenepred.gob.pe/arcgis/rest/services",
-                "stype": "arcgis_rest",
-                "category": "Clima y Riesgos"
-            },
-            {
-                "institution": "COFOPRI",
-                "name": "COFOPRI Catastro Urbano (REST)",
-                "url": "https://geocat.cofopri.gob.pe/arcgis/rest/services",
-                "stype": "arcgis_rest",
-                "category": "Catastro y Propiedad"
-            },
-            {
                 "institution": "OSINERGMIN",
                 "name": "OSINERGMIN Energía (REST)",
-                "url": "https://geoportal.osinergmin.gob.pe/arcgis/rest/services",
+                "url": "https://gisem.osinergmin.gob.pe/serverosih/rest/services",
                 "stype": "arcgis_rest",
                 "category": "Límites y Cartografía"
             },
             {
                 "institution": "OEFA",
-                "name": "OEFA Monitoreo Ambiental (REST)",
-                "url": "https://oefa.gob.pe/arcgis/rest/services",
+                "name": "PIFA Monitoreo y Fiscalización Ambiental (REST)",
+                "url": "https://pifa.oefa.gob.pe/arcgis/rest/services",
                 "stype": "arcgis_rest",
                 "category": "Medio Ambiente"
-            },
-            {
-                "institution": "SUNARP",
-                "name": "SUNARP Visor Registral (REST)",
-                "url": "https://visor.sunarp.gob.pe/arcgis/rest/services",
-                "stype": "arcgis_rest",
-                "category": "Catastro y Propiedad"
             },
             {
                 "institution": "IGP",
@@ -542,38 +604,37 @@ class PeruSpatialHubPanel(QDockWidget):
                 "stype": "wms",
                 "category": "Clima y Riesgos"
             },
-            {
-                "institution": "MINAM",
-                "name": "MINAM Cobertura y ZEE (WMS)",
-                "url": "https://geoservidorperu.minam.gob.pe/arcgis/services/ServicioTematico/MapServer/WMSServer",
-                "stype": "wms",
-                "category": "Medio Ambiente"
-            }
         ]
 
         self.live_servers = [
             s for s in LIVE_SERVERS
-            if s["stype"] == "arcgis_rest" and _clean_rest_url(s["url"]) in ACTIVE_REST_ROOTS
+            if (
+                s["stype"] == "arcgis_rest"
+                and _clean_rest_url(s["url"]) in ACTIVE_REST_ROOTS
+            ) or (
+                s["stype"] == "wms"
+                and _clean_rest_url(s["url"]) in ACTIVE_WMS_ROOTS
+            )
         ]
         for s in self.live_servers:
-            if s["stype"] != "arcgis_rest":
-                continue
             server_item = QTreeWidgetItem(explorer_root)
             server_item.setText(0, f"{s['institution']} - {s['name']}")
-            server_item.setText(1, "Servidor ArcGIS REST")
+            is_arcgis = s["stype"] == "arcgis_rest"
+            server_item.setText(1, "Servidor ArcGIS REST" if is_arcgis else "Servidor WMS")
             server_item.setData(0, Qt.ItemDataRole.UserRole, {
-                "type": "server",
+                "type": "server" if is_arcgis else "ogc_service",
                 "stype": s["stype"],
                 "url": s["url"],
                 "name": s["name"],
                 "institution": s["institution"],
                 "category": s["category"],
                 "crs_warning": s.get("crs_warning", False),
-                "is_loaded": False
+                "is_loaded": not is_arcgis
             })
-            # Add a dummy child to show expansion arrow
-            dummy = QTreeWidgetItem(server_item)
-            dummy.setText(0, "Cargando...")
+            if is_arcgis:
+                # Add a dummy child to show expansion arrow
+                dummy = QTreeWidgetItem(server_item)
+                dummy.setText(0, "Cargando...")
 
         # Keep root items expanded, but explorer root collapsed by default
         self.tree_widget.expandAll()
@@ -588,6 +649,7 @@ class PeruSpatialHubPanel(QDockWidget):
             "arcgis_map_layer": "Capa REST",
             "arcgis_vector_layer": "Vectorial REST",
             "arcgis_raster_layer": "Raster REST",
+            "wms": "Servidor WMS",
         }
         return mapping.get(type_str, type_str)
 
@@ -997,7 +1059,7 @@ class PeruSpatialHubPanel(QDockWidget):
         s = item.data(0, Qt.ItemDataRole.UserRole)
         if s is None:
             return
-        if s.get("type") in ["server", "folder", "arcgis_service", "arcgis_group"]:
+        if s.get("type") in ["server", "folder", "arcgis_service", "arcgis_group", "ogc_service"]:
             item.setExpanded(not item.isExpanded())
         else:
             self.add_selected_layer()
@@ -1074,7 +1136,21 @@ class PeruSpatialHubPanel(QDockWidget):
 
             tags_html = "".join([f"<span style='background-color: #e1e1e1; padding: 2px 6px; margin-right: 4px; border-radius: 3px; font-size: 10px;'>{tag}</span>" for tag in s.get("tags", [])])
 
-            if ntype in ["server", "folder", "arcgis_service", "arcgis_group"]:
+            if ntype == "ogc_service":
+                html = f"""
+                    <h3>{s['name']}</h3>
+                    <p><b>Institución:</b> {s['institution']}</p>
+                    <p><b>Categoría:</b> {s['category']}</p>
+                    <p><b>Tipo:</b> Servicio WMS oficial verificado</p>
+                    <p><b>Descripción:</b> Registre esta conexión para explorar sus capas desde la sección WMS/WMTS del panel Explorador de QGIS.</p>
+                    <p><b>URL del Servidor:</b><br><a href='{s['url']}'>{s['url']}</a></p>
+                """
+                self.metadata_panel.setHtml(html)
+                self.btn_add_layer.setEnabled(False)
+                self.btn_register_browser.setEnabled(True)
+                self.btn_copy_url.setEnabled(True)
+                self.btn_open_browser.setEnabled(True)
+            elif ntype in ["server", "folder", "arcgis_service", "arcgis_group"]:
                 html = f"""
                     <h3>{s['name']}</h3>
                     <p><b>Institución:</b> {s['institution']}</p>
@@ -1165,7 +1241,7 @@ class PeruSpatialHubPanel(QDockWidget):
             return
 
         s = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
-        if not s or s.get("type") in ["server", "folder", "arcgis_service", "arcgis_group"]:
+        if not s or s.get("type") in ["server", "folder", "arcgis_service", "arcgis_group", "ogc_service"]:
             return
 
         from qgis.PyQt.QtWidgets import QApplication
@@ -1270,11 +1346,13 @@ class PeruSpatialHubPanel(QDockWidget):
 
         self.write_connection(name, url, stype)
 
+        connection_section = "WMS/WMTS" if stype == "wms" else "ArcGIS REST"
+
         QMessageBox.information(
             self,
             "Conexión Registrada",
             f"La conexión '{name}' ha sido agregada con éxito al panel Explorador de QGIS.\n\n"
-            f"Puede encontrarla en la categoría nativa de ArcGIS REST."
+            f"Puede encontrarla en la sección nativa {connection_section}."
         )
 
     def register_all_connections(self):
@@ -1282,7 +1360,7 @@ class PeruSpatialHubPanel(QDockWidget):
         reply = QMessageBox.question(
             self,
             "Registrar Todos los Servicios",
-            "¿Desea registrar todos los servicios del catálogo (más de 30) en el panel Explorador de QGIS?\n\n"
+            "¿Desea registrar todas las conexiones verificadas del catálogo en el panel Explorador de QGIS?\n\n"
             "Esto creará conexiones nativas organizadas para que pueda explorar todo el catálogo del estado "
             "peruano directamente desde el panel de QGIS.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -1293,7 +1371,7 @@ class PeruSpatialHubPanel(QDockWidget):
             count = 0
             for s in self.live_servers:
                 full_name = f"{s['institution']} - {s['name']}"
-                self.write_connection(full_name, s["url"], "arcgis_rest")
+                self.write_connection(full_name, s["url"], s["stype"])
                 count += 1
             
             self.iface.reloadConnections()
@@ -1302,7 +1380,7 @@ class PeruSpatialHubPanel(QDockWidget):
                 self,
                 "Registro Completo",
                 f"Se han registrado {count} conexiones en el panel Explorador de QGIS.\n\n"
-                f"Expanda la sección 'ArcGIS REST Servers' en su panel Explorador para verlas."
+                "Revise las secciones 'ArcGIS REST Servers' y 'WMS/WMTS' del panel Explorador."
             )
 
     def write_connection(self, name, url, stype):
@@ -1315,6 +1393,10 @@ class PeruSpatialHubPanel(QDockWidget):
             else:
                 key = f"qgis/connections-arcgismapserver/{name}/"
             
+            settings.setValue(key + "url", url)
+            settings.setValue(key + "authcfg", "")
+        elif stype == "wms":
+            key = f"qgis/connections-wms/{name}/"
             settings.setValue(key + "url", url)
             settings.setValue(key + "authcfg", "")
         self.iface.reloadConnections()
