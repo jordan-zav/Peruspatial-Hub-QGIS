@@ -1,0 +1,17 @@
+[general]
+name=PeruSpatial Hub
+qgisMinimumVersion=3.34
+description=Explora repositorios ArcGIS REST oficiales del Perú y carga sus capas raster y vectoriales nativas en QGIS.
+about=PeruSpatial Hub consulta en vivo directorios ArcGIS REST oficiales, descubre sus servicios y subcapas, y carga cada capa con el proveedor raster o vectorial correspondiente de QGIS, sin convertirla a WMS.
+version=1.0.0
+author=Jordan Zavaleta
+email=jordanzav@gisgeo.dev
+repository=https://github.com/jordan-zav/peruspatial-hub-qgis
+tracker=https://github.com/jordan-zav/peruspatial-hub-qgis/issues
+homepage=https://github.com/jordan-zav/peruspatial-hub-qgis
+category=Web
+icon=logo_solo.png
+tags=peru, geology, mining, geophysics, archaeology, raster, vector, arcgis, rest, idep
+experimental=False
+deprecated=False
+changelog=1.0.0 - Primera versión estable de código abierto bajo GPLv3.
