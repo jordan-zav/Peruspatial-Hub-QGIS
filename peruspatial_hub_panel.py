@@ -6,11 +6,10 @@ Constructed programmatically via PyQt5.
 
 import os
 import webbrowser
-import urllib.request
-import urllib.error
 import urllib.parse
-import xml.etree.ElementTree as ET
+import http.client
 import json
+import ssl
 import time
 import unicodedata
 
@@ -39,6 +38,37 @@ ACTIVE_REST_ROOTS = {
     "https://geoservicios.sernanp.gob.pe/arcgis/rest/services",
     "https://geoservidorperu.minam.gob.pe/arcgis/rest/services",
 }
+
+MAX_HTTP_RESPONSE_BYTES = 20 * 1024 * 1024
+
+
+def _read_https(url, timeout=15, headers=None):
+    """Read a bounded HTTPS response using certificate verification."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme.casefold() != "https" or not parts.hostname:
+        raise ValueError("solo se permiten servicios HTTPS con un host válido")
+
+    path = parts.path or "/"
+    if parts.query:
+        path = f"{path}?{parts.query}"
+
+    connection = http.client.HTTPSConnection(
+        parts.hostname,
+        port=parts.port or 443,
+        timeout=timeout,
+        context=ssl.create_default_context(),
+    )
+    try:
+        connection.request("GET", path, headers=headers or {})
+        response = connection.getresponse()
+        if response.status < 200 or response.status >= 300:
+            raise RuntimeError(f"HTTP {response.status}: {response.reason}")
+        payload = response.read(MAX_HTTP_RESPONSE_BYTES + 1)
+        if len(payload) > MAX_HTTP_RESPONSE_BYTES:
+            raise RuntimeError("la respuesta del servidor excede el límite permitido")
+        return payload
+    finally:
+        connection.close()
 
 
 def _url_with_json(url):
@@ -85,19 +115,19 @@ class AboutDialog(QDialog):
         logo_path = os.path.join(plugin_dir, "logo_dev.png") if plugin_dir else ""
         pixmap = QPixmap(logo_path)
         if not pixmap.isNull():
-            logo_label.setPixmap(pixmap.scaledToHeight(80, Qt.SmoothTransformation))
-            logo_label.setAlignment(Qt.AlignCenter)
+            logo_label.setPixmap(pixmap.scaledToHeight(80, Qt.TransformationMode.SmoothTransformation))
+            logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             layout.addWidget(logo_label)
 
         title = QLabel("<h2>PeruSpatial Hub</h2>")
-        title.setAlignment(Qt.AlignCenter)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
         subtitle = QLabel(
             "Desarrollado por <b>Jordan Zavaleta (GisGeo Dev)</b><br>"
             "<a href='mailto:jordanzav@gisgeo.dev' style='text-decoration: none; color: #1976d2;'>jordanzav@gisgeo.dev</a>"
         )
-        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle.setOpenExternalLinks(True)
         layout.addWidget(subtitle)
 
@@ -105,11 +135,11 @@ class AboutDialog(QDialog):
             "<a href='https://gisgeo.dev' style='text-decoration: none; color: #1976d2;'>Sitio Web: gisgeo.dev</a><br><br>"
             "<a href='https://www.linkedin.com/in/jordan-zav/' style='text-decoration: none; color: #1976d2;'>LinkedIn Profile</a>"
         )
-        links.setAlignment(Qt.AlignCenter)
+        links.setAlignment(Qt.AlignmentFlag.AlignCenter)
         links.setOpenExternalLinks(True)
         layout.addWidget(links)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
 
@@ -124,7 +154,10 @@ class PeruSpatialHubPanel(QDockWidget):
         self.iface = iface
         self.plugin_dir = plugin_dir
         self.setWindowTitle("PeruSpatial Hub")
-        self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+        )
 
         # Set main widget
         self.main_widget = QWidget()
@@ -139,7 +172,7 @@ class PeruSpatialHubPanel(QDockWidget):
         self.init_header()
 
         # Create a splitter to separate the search/tree section from the metadata/actions section
-        self.splitter = QSplitter(Qt.Vertical)
+        self.splitter = QSplitter(Qt.Orientation.Vertical)
         self.main_layout.addWidget(self.splitter)
 
         # Top container for search and list
@@ -215,22 +248,22 @@ class PeruSpatialHubPanel(QDockWidget):
         logo_path = os.path.join(self.plugin_dir, "logo.png") if self.plugin_dir else ""
         pixmap = QPixmap(logo_path)
         if not pixmap.isNull():
-            logo_label.setPixmap(pixmap.scaledToHeight(60, Qt.SmoothTransformation))
-            logo_label.setAlignment(Qt.AlignCenter)
+            logo_label.setPixmap(pixmap.scaledToHeight(60, Qt.TransformationMode.SmoothTransformation))
+            logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             header_layout.addWidget(logo_label)
 
         title_label = QLabel("PeruSpatial Hub")
-        title_font = QFont("Segoe UI", 12, QFont.Bold)
+        title_font = QFont("Segoe UI", 12, QFont.Weight.Bold)
         title_label.setFont(title_font)
         title_label.setStyleSheet("color: #0b5394;")
-        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         sub_label = QLabel("Catálogo de Geoportales y Servidores del Estado Peruano")
-        sub_font = QFont("Segoe UI", 8, QFont.StyleItalic)
+        sub_font = QFont("Segoe UI", 8, QFont.Style.StyleItalic)
         sub_label.setFont(sub_font)
         sub_label.setStyleSheet("color: #555;")
         sub_label.setWordWrap(True)
-        sub_label.setAlignment(Qt.AlignCenter)
+        sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         header_layout.addWidget(title_label)
         header_layout.addWidget(sub_label)
@@ -355,7 +388,7 @@ class PeruSpatialHubPanel(QDockWidget):
     def show_about_dialog(self):
         """Opens the About dialog with developer information and links."""
         dialog = AboutDialog(self, self.plugin_dir)
-        dialog.exec_()
+        dialog.exec()
 
     def fetch_arcgis_json(self, url, timeout=15, attempts=2):
         """Read ArcGIS REST metadata with one retry for intermittent public servers."""
@@ -363,15 +396,14 @@ class PeruSpatialHubPanel(QDockWidget):
         last_error = None
         for attempt in range(attempts):
             try:
-                req = urllib.request.Request(
+                payload = _read_https(
                     request_url,
+                    timeout=timeout,
                     headers={
                         "User-Agent": "PeruSpatial-Hub-QGIS/1.0.0",
                         "Accept": "application/json",
                     },
                 )
-                with urllib.request.urlopen(req, timeout=timeout) as response:
-                    payload = response.read()
                 data = json.loads(payload.decode("utf-8-sig"))
                 if not isinstance(data, dict):
                     raise ValueError("el servidor no devolvió un objeto JSON")
@@ -381,7 +413,13 @@ class PeruSpatialHubPanel(QDockWidget):
                     message = error.get("message") or "error REST sin descripción"
                     raise RuntimeError(f"ArcGIS REST {error.get('code', '')}: {message}. {details}".strip())
                 return data
-            except (urllib.error.URLError, TimeoutError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+            except (
+                OSError,
+                http.client.HTTPException,
+                ValueError,
+                RuntimeError,
+                json.JSONDecodeError,
+            ) as exc:
                 last_error = exc
                 if attempt + 1 < attempts:
                     time.sleep(0.35)
@@ -406,9 +444,9 @@ class PeruSpatialHubPanel(QDockWidget):
         # live repository roots and discover their current services/layers.
         explorer_root = QTreeWidgetItem(self.tree_widget)
         explorer_root.setText(0, "🌐 Servidores en Vivo (Explorador Completo)")
-        explorer_root.setFont(0, QFont("Segoe UI", 10, QFont.Bold))
+        explorer_root.setFont(0, QFont("Segoe UI", 10, QFont.Weight.Bold))
         explorer_root.setForeground(0, QColor("#0b5394"))
-        explorer_root.setData(0, Qt.UserRole, None)
+        explorer_root.setData(0, Qt.ItemDataRole.UserRole, None)
 
         # List of official directories/servers for live exploration
         LIVE_SERVERS = [
@@ -523,7 +561,7 @@ class PeruSpatialHubPanel(QDockWidget):
             server_item = QTreeWidgetItem(explorer_root)
             server_item.setText(0, f"{s['institution']} - {s['name']}")
             server_item.setText(1, "Servidor ArcGIS REST")
-            server_item.setData(0, Qt.UserRole, {
+            server_item.setData(0, Qt.ItemDataRole.UserRole, {
                 "type": "server",
                 "stype": s["stype"],
                 "url": s["url"],
@@ -561,7 +599,7 @@ class PeruSpatialHubPanel(QDockWidget):
 
     def item_matches_search(self, item, search_text, selected_category):
         """Return whether one tree node matches the active text/category filters."""
-        data = item.data(0, Qt.UserRole) or {}
+        data = item.data(0, Qt.ItemDataRole.UserRole) or {}
         category = data.get("category")
         category_matches = (
             selected_category == "Todas las Categorías"
@@ -651,7 +689,7 @@ class PeruSpatialHubPanel(QDockWidget):
 
     def discover_directory_branch(self, item, visited):
         """Load REST folders/services recursively, without loading every service layer."""
-        data = item.data(0, Qt.UserRole) or {}
+        data = item.data(0, Qt.ItemDataRole.UserRole) or {}
         if data.get("type") not in ("server", "folder"):
             return
 
@@ -666,7 +704,7 @@ class PeruSpatialHubPanel(QDockWidget):
         # Snapshot children because loading a branch replaces its dummy node.
         children = [item.child(index) for index in range(item.childCount())]
         for child in children:
-            child_data = child.data(0, Qt.UserRole) or {}
+            child_data = child.data(0, Qt.ItemDataRole.UserRole) or {}
             if child_data.get("type") == "folder":
                 self.discover_directory_branch(child, visited)
 
@@ -674,7 +712,7 @@ class PeruSpatialHubPanel(QDockWidget):
         """Load sublayers only for services whose name/path matches the query."""
         candidates = []
         for item in self.iter_tree_items():
-            data = item.data(0, Qt.UserRole) or {}
+            data = item.data(0, Qt.ItemDataRole.UserRole) or {}
             if (
                 data.get("type") == "arcgis_service"
                 and not data.get("is_loaded", False)
@@ -714,14 +752,14 @@ class PeruSpatialHubPanel(QDockWidget):
             level=0,
             duration=4,
         )
-        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         QApplication.processEvents()
         try:
             visited = set()
             for top_index in range(self.tree_widget.topLevelItemCount()):
                 top_item = self.tree_widget.topLevelItem(top_index)
                 for item in list(self.iter_tree_items(top_item)):
-                    data = item.data(0, Qt.UserRole) or {}
+                    data = item.data(0, Qt.ItemDataRole.UserRole) or {}
                     if data.get("type") == "server":
                         self.discover_directory_branch(item, visited)
 
@@ -742,25 +780,25 @@ class PeruSpatialHubPanel(QDockWidget):
             return
 
         item = selected_items[0]
-        s = item.data(0, Qt.UserRole)
+        s = item.data(0, Qt.ItemDataRole.UserRole)
         
         self.update_buttons_state(s)
 
     def on_item_expanded(self, item):
         """Called when a tree node is expanded. Loads subfolders/services dynamically."""
-        node_data = item.data(0, Qt.UserRole)
+        node_data = item.data(0, Qt.ItemDataRole.UserRole)
         if node_data and node_data.get("type") in ["server", "folder", "arcgis_service"] and not node_data.get("is_loaded", False):
             self.load_dynamic_node(item)
 
     def load_dynamic_node(self, item):
-        node_data = item.data(0, Qt.UserRole)
+        node_data = item.data(0, Qt.ItemDataRole.UserRole)
         url = node_data["url"]
         stype = node_data["stype"]
         inst = node_data["institution"]
         cat = node_data["category"]
 
         from qgis.PyQt.QtWidgets import QApplication
-        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         
         item.takeChildren()
         loading_node = QTreeWidgetItem(item)
@@ -780,8 +818,8 @@ class PeruSpatialHubPanel(QDockWidget):
                     f_item = QTreeWidgetItem(item)
                     f_item.setText(0, folder_name)
                     f_item.setText(1, "Carpeta REST")
-                    f_item.setFont(0, QFont("Segoe UI", 9, QFont.Bold))
-                    f_item.setData(0, Qt.UserRole, {
+                    f_item.setFont(0, QFont("Segoe UI", 9, QFont.Weight.Bold))
+                    f_item.setData(0, Qt.ItemDataRole.UserRole, {
                         "type": "folder",
                         "stype": "arcgis_rest",
                         "url": furl,
@@ -815,7 +853,7 @@ class PeruSpatialHubPanel(QDockWidget):
                     s_item = QTreeWidgetItem(item)
                     s_item.setText(0, sname_short)
                     s_item.setText(1, self.friendly_type(friendly_type))
-                    s_item.setData(0, Qt.UserRole, {
+                    s_item.setData(0, Qt.ItemDataRole.UserRole, {
                         "type": "arcgis_raster_layer" if is_image else "arcgis_service",
                         "stype": friendly_type,
                         "service_kind": stype_str,
@@ -850,7 +888,7 @@ class PeruSpatialHubPanel(QDockWidget):
             if loading_node.parent() is item:
                 item.removeChild(loading_node)
             node_data["is_loaded"] = loaded_ok
-            item.setData(0, Qt.UserRole, node_data)
+            item.setData(0, Qt.ItemDataRole.UserRole, node_data)
             QApplication.restoreOverrideCursor()
             # Keep an active search consistent when a matching folder/service
             # is expanded and its nested layers are loaded on demand.
@@ -897,8 +935,8 @@ class PeruSpatialHubPanel(QDockWidget):
 
             if is_group:
                 tree_item.setText(1, "Grupo REST")
-                tree_item.setFont(0, QFont("Segoe UI", 9, QFont.Bold))
-                tree_item.setData(0, Qt.UserRole, {
+                tree_item.setFont(0, QFont("Segoe UI", 9, QFont.Weight.Bold))
+                tree_item.setData(0, Qt.ItemDataRole.UserRole, {
                     "type": "arcgis_group",
                     "stype": service_data["stype"],
                     "url": service_url,
@@ -934,7 +972,7 @@ class PeruSpatialHubPanel(QDockWidget):
                     display_type = "Raster/Vectorial REST"
                     data_kind = "mixto"
                 tree_item.setText(1, display_type)
-                tree_item.setData(0, Qt.UserRole, {
+                tree_item.setData(0, Qt.ItemDataRole.UserRole, {
                     "type": leaf_type,
                     "stype": leaf_type,
                     "data_kind": data_kind,
@@ -956,7 +994,7 @@ class PeruSpatialHubPanel(QDockWidget):
 
     def on_item_double_clicked(self, item, column):
         """Expand REST containers or add an individual REST layer."""
-        s = item.data(0, Qt.UserRole)
+        s = item.data(0, Qt.ItemDataRole.UserRole)
         if s is None:
             return
         if s.get("type") in ["server", "folder", "arcgis_service", "arcgis_group"]:
@@ -1077,7 +1115,7 @@ class PeruSpatialHubPanel(QDockWidget):
             if summary:
                 return summary
         except Exception:
-            pass
+            return "el proveedor QGIS no devolvió detalles del error REST"
         return "el proveedor QGIS consideró inválida la fuente ArcGIS REST"
 
     @staticmethod
@@ -1126,7 +1164,7 @@ class PeruSpatialHubPanel(QDockWidget):
         if not selected_items:
             return
 
-        s = selected_items[0].data(0, Qt.UserRole)
+        s = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
         if not s or s.get("type") in ["server", "folder", "arcgis_service", "arcgis_group"]:
             return
 
@@ -1140,7 +1178,7 @@ class PeruSpatialHubPanel(QDockWidget):
         self.iface.messageBar().pushMessage(
             "PeruSpatial Hub", f"Consultando capa REST: {name}...", level=0, duration=2
         )
-        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         QApplication.processEvents()
         try:
             if layer_type == "arcgis_vector_layer":
@@ -1208,203 +1246,13 @@ class PeruSpatialHubPanel(QDockWidget):
             "La capa no se intentó cargar mediante WMS.",
         )
 
-    def _add_selected_layer_legacy(self):
-        """Programmatically adds the selected service as a layer in QGIS."""
-        selected_items = self.tree_widget.selectedItems()
-        if not selected_items:
-            return
-        
-        s = selected_items[0].data(0, Qt.UserRole)
-        if s is None:
-            return
-
-        name = s["name"]
-        url = s["url"]
-        stype = s.get("stype", s["type"])
-
-        self.iface.messageBar().pushMessage(
-            "PeruSpatial Hub",
-            f"Capa: {name} - Conectando...",
-            level=0, # Info
-            duration=2
-        )
-
-        layers_added = 0
-        error_msg = ""
-        
-        try:
-            if stype == "arcgis_mapserver":
-                # The provider expects a QGIS datasource URI, not a bare HTTP URL.
-                uri = f"url='{url}'"
-                layer = QgsRasterLayer(uri, name, "arcgismapserver")
-                
-                if layer and layer.isValid():
-                    # Some ArcGIS servers (notably GEOCATMIN) do not pass the service CRS
-                    # through QGIS' provider. Read the authoritative REST metadata in that case.
-                    if not layer.crs().isValid():
-                        try:
-                            separator = "&" if "?" in url else "?"
-                            metadata_url = f"{url}{separator}f=json"
-                            req = urllib.request.Request(metadata_url, headers={'User-Agent': 'Mozilla/5.0'})
-                            with urllib.request.urlopen(req, timeout=8) as response:
-                                data = json.loads(response.read().decode('utf-8'))
-                            spatial_ref = data.get("spatialReference", {})
-                            wkid = spatial_ref.get("latestWkid") or spatial_ref.get("wkid")
-                            if wkid:
-                                layer.setCrs(QgsCoordinateReferenceSystem.fromEpsgId(int(wkid)))
-                        except Exception as crs_error:
-                            print(f"No se pudo obtener el CRS de {name}: {crs_error}")
-                    QgsProject.instance().addMapLayer(layer)
-                    layers_added += 1
-                else:
-                    error_msg = "QGIS consideró la capa MapServer inválida al conectar directamente."
-
-            elif stype == "arcgisfeatureserver":
-                # For FeatureServer, fetch sublayers dynamically from REST API f=json
-                req = urllib.request.Request(url + "?f=json", headers={'User-Agent': 'Mozilla/5.0'})
-                try:
-                    with urllib.request.urlopen(req, timeout=5) as response:
-                        data = json.loads(response.read().decode('utf-8'))
-                        layers_info = data.get("layers", [])
-                        
-                        if layers_info:
-                            for l_info in layers_info:
-                                lid = l_info.get("id")
-                                lname = l_info.get("name")
-                                lurl = f"{url}/{lid}"
-                                
-                                uri = QgsDataSourceUri()
-                                uri.setParam("url", lurl)
-                                
-                                vlayer = QgsVectorLayer(uri.uri(False), f"{name} - {lname}", "arcgisfeatureserver")
-                                if vlayer and vlayer.isValid():
-                                    QgsProject.instance().addMapLayer(vlayer)
-                                    layers_added += 1
-                        else:
-                            # Fallback if no sublayers array
-                            uri = QgsDataSourceUri()
-                            uri.setParam("url", url + "/0")
-                            vlayer = QgsVectorLayer(uri.uri(False), name, "arcgisfeatureserver")
-                            if vlayer and vlayer.isValid():
-                                QgsProject.instance().addMapLayer(vlayer)
-                                layers_added += 1
-                except Exception as e:
-                    # Fallback to direct load of index 0
-                    uri = QgsDataSourceUri()
-                    uri.setParam("url", url + "/0")
-                    vlayer = QgsVectorLayer(uri.uri(False), name, "arcgisfeatureserver")
-                    if vlayer and vlayer.isValid():
-                        QgsProject.instance().addMapLayer(vlayer)
-                        layers_added += 1
-                    else:
-                        error_msg = f"Error al descargar capas de FeatureServer: {str(e)}"
-
-            elif stype == "wms":
-                # WMS requires "layers" parameter. Fetch GetCapabilities and parse layers.
-                base_url = url.split('?')[0]
-                caps_url = f"{base_url}?service=WMS&version=1.3.0&request=GetCapabilities"
-                
-                req = urllib.request.Request(caps_url, headers={'User-Agent': 'Mozilla/5.0'})
-                wms_layers = []
-                try:
-                    with urllib.request.urlopen(req, timeout=8) as response:
-                        xml_content = response.read()
-                        
-                    root = ET.fromstring(xml_content)
-                    for elem in root.iter():
-                        tag_local = elem.tag.split('}')[-1]
-                        if tag_local == 'Layer':
-                            for child in elem:
-                                child_local = child.tag.split('}')[-1]
-                                if child_local == 'Name' and child.text:
-                                    wms_layers.append(child.text)
-                                    break
-                except Exception as ex:
-                    print(f"Error parsing WMS XML: {ex}")
-
-                if wms_layers:
-                    selected_layer = s.get("layer_name")
-                    unique_layers = [selected_layer] if selected_layer else list(dict.fromkeys(wms_layers))
-                    layers_str = ",".join(unique_layers)
-                    uri = QgsDataSourceUri()
-                    uri.setParam("url", base_url)
-                    uri.setParam("layers", layers_str)
-                    uri.setParam("styles", "")
-                    uri.setParam("format", "image/png")
-                    layer = QgsRasterLayer(uri.encodedUri().data().decode(), name, "wms")
-                    if layer and layer.isValid():
-                        QgsProject.instance().addMapLayer(layer)
-                        layers_added += 1
-                else:
-                    # Try fallback to layer 0
-                    uri = QgsDataSourceUri()
-                    uri.setParam("url", base_url)
-                    uri.setParam("layers", "0")
-                    uri.setParam("styles", "")
-                    uri.setParam("format", "image/png")
-                    layer = QgsRasterLayer(uri.encodedUri().data().decode(), name, "wms")
-                    if layer and layer.isValid():
-                        QgsProject.instance().addMapLayer(layer)
-                        layers_added += 1
-                    else:
-                        error_msg = "No se pudieron obtener o parsear las capas del servidor WMS."
-
-            elif stype == "wfs":
-                base_url = url.split('?')[0]
-                caps_url = f"{base_url}?service=WFS&request=GetCapabilities"
-                req = urllib.request.Request(caps_url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=8) as response:
-                    root = ET.fromstring(response.read())
-
-                feature_types = []
-                for elem in root.iter():
-                    if elem.tag.split('}')[-1] == "FeatureType":
-                        for child in elem:
-                            if child.tag.split('}')[-1] == "Name" and child.text:
-                                feature_types.append(child.text)
-                                break
-
-                for type_name in feature_types:
-                    uri = QgsDataSourceUri()
-                    uri.setParam("url", base_url)
-                    uri.setParam("typename", type_name)
-                    uri.setParam("version", "auto")
-                    layer = QgsVectorLayer(uri.uri(False), f"{name} - {type_name}", "WFS")
-                    if layer and layer.isValid():
-                        QgsProject.instance().addMapLayer(layer)
-                        layers_added += 1
-
-                if not layers_added:
-                    error_msg = "No se encontraron capas WFS válidas en el servicio."
-
-        except Exception as e:
-            error_msg = str(e)
-
-        if layers_added > 0:
-            self.iface.messageBar().pushMessage(
-                "PeruSpatial Hub",
-                f"Capa '{name}' añadida con éxito al lienzo ({layers_added} subcapas cargadas).",
-                level=3, # Success
-                duration=4
-            )
-        else:
-            msg = (
-                f"No se pudo cargar la capa directamente en el lienzo.\n"
-                f"Detalle: {error_msg}\n\n"
-                f"Esto ocurre frecuentemente con servidores OGC WMS/WFS complejos o REST que requieren "
-                f"autenticación, parámetros específicos o capas no consultables directamente.\n\n"
-                f"Se recomienda hacer clic en 'Registrar Conexión' para agregar el servidor al "
-                f"Explorador de QGIS, desde donde podrá examinar y arrastrar todas sus subcapas con precisión."
-            )
-            QMessageBox.warning(self, "Error de Conexión", msg)
-
     def register_selected_connection(self):
         """Registers the selected service in QGIS Settings for Browser panel integration."""
         selected_items = self.tree_widget.selectedItems()
         if not selected_items:
             return
         
-        s = selected_items[0].data(0, Qt.UserRole)
+        s = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
         if s is None:
             return
 
@@ -1437,11 +1285,11 @@ class PeruSpatialHubPanel(QDockWidget):
             "¿Desea registrar todos los servicios del catálogo (más de 30) en el panel Explorador de QGIS?\n\n"
             "Esto creará conexiones nativas organizadas para que pueda explorar todo el catálogo del estado "
             "peruano directamente desde el panel de QGIS.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
         )
 
-        if reply == QMessageBox.Yes:
+        if reply == QMessageBox.StandardButton.Yes:
             count = 0
             for s in self.live_servers:
                 full_name = f"{s['institution']} - {s['name']}"
@@ -1477,7 +1325,7 @@ class PeruSpatialHubPanel(QDockWidget):
         if not selected_items:
             return
         
-        s = selected_items[0].data(0, Qt.UserRole)
+        s = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
         if s is not None:
             clipboard = self.iface.mainWindow().clipboard()
             clipboard.setText(s["url"])
@@ -1494,6 +1342,6 @@ class PeruSpatialHubPanel(QDockWidget):
         if not selected_items:
             return
         
-        s = selected_items[0].data(0, Qt.UserRole)
+        s = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
         if s is not None:
             webbrowser.open(s["url"])

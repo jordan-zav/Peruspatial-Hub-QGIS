@@ -40,7 +40,7 @@ class PeruSpatialHub(object):
                 from qgis.core import QgsApplication
                 icon = QgsApplication.getThemeIcon("/mActionAddWmsLayer.svg")
             except Exception:
-                pass
+                icon = QIcon()
 
         self.action = QAction(
             icon,
@@ -76,7 +76,9 @@ class PeruSpatialHub(object):
         try:
             if not self.dock_widget:
                 self.dock_widget = PeruSpatialHubPanel(self.iface, self.iface.mainWindow(), self.plugin_dir)
-                self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dock_widget)
+                self.iface.addDockWidget(
+                    Qt.DockWidgetArea.RightDockWidgetArea, self.dock_widget
+                )
 
             self.dock_widget.show()
             self.dock_widget.raise_()
@@ -89,5 +91,3 @@ class PeruSpatialHub(object):
                 "Error en PeruSpatial Hub",
                 f"No se pudo abrir el panel del plugin.\n\nDetalle del error:\n{tb}"
             )
-
-
