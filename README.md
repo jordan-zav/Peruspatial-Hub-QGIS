@@ -1,6 +1,6 @@
 # PeruSpatial Hub
 
-Versión estable: 1.0.2
+Versión estable: 1.1.0
 
 **PeruSpatial Hub** es un plugin para QGIS diseñado para centralizar y facilitar el acceso a la Infraestructura de Datos Espaciales (IDE) de las principales instituciones públicas del Perú. 
 
@@ -74,4 +74,4 @@ Si está trabajando con datos arqueológicos o geofísicos en el Perú, siga rig
 
 Desarrollado por [Jordan Zavaleta](https://gisgeo.dev).
 
-El código fuente y el seguimiento de incidencias se encuentran en [GitHub](https://github.com/jordan-zav/peruspatial-hub-qgis).
+El código fuente y el seguimiento de incidencias se encuentran en [GitHub](https://github.com/jordan-zav/peruspatial-hub).
