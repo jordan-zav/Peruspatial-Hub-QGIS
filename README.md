@@ -1,4 +1,4 @@
-# PeruSpatial Hub - QGIS Plugin
+# PeruSpatial Hub
 
 Versión estable: 1.0.2
 
