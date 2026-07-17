@@ -7,20 +7,24 @@ Constructed programmatically via PyQt5.
 import os
 import webbrowser
 import urllib.parse
-import http.client
 import json
-import ssl
 import time
 import unicodedata
+import xml.etree.ElementTree as ET
 
-from qgis.PyQt.QtCore import Qt, QSize, QTimer
+from qgis.PyQt.QtCore import Qt, QSize, QTimer, QUrl
+from qgis.PyQt.QtNetwork import QNetworkReply, QNetworkRequest
 from qgis.PyQt.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLineEdit, QComboBox, QTreeWidget, QTreeWidgetItem, QPushButton, QToolButton,
     QLabel, QTextBrowser, QMessageBox, QSplitter, QDialog, QDialogButtonBox
 )
 from qgis.PyQt.QtGui import QFont, QColor, QClipboard, QIcon, QPixmap
-from qgis.core import QgsSettings, QgsRasterLayer, QgsVectorLayer, QgsProject, QgsDataSourceUri, QgsCoordinateReferenceSystem
+from qgis.core import (
+    QgsSettings, QgsRasterLayer, QgsVectorLayer, QgsProject, QgsDataSourceUri,
+    QgsCoordinateReferenceSystem, QgsNetworkAccessManager
+)
+from qgis.gui import QgsAuthConfigSelect
 
 ARCGIS_SERVICE_TYPES = {
     "arcgis_mapserver": "MapServer",
@@ -29,6 +33,7 @@ ARCGIS_SERVICE_TYPES = {
 }
 
 ACTIVE_REST_ROOTS = {
+    "https://ide.igp.gob.pe/arcgis/rest/services",
     "https://geocatmin.ingemmet.gob.pe/arcgis/rest/services",
     "https://geocatmin.ingemmet.gob.pe/arcgis/rest/services/WGS84_18",
     "https://www.idep.gob.pe/geoportal/rest/services/SERVICIOS_IGN",
@@ -43,6 +48,8 @@ ACTIVE_REST_ROOTS = {
 
 ACTIVE_WMS_ROOTS = {
     "https://ide.igp.gob.pe/geoserver/ows",
+    "https://ide.igp.gob.pe/geoserver/SCAH_NDVI/wms",
+    "https://ide.igp.gob.pe/geoserver/SCAHanomNDVI/wms",
 }
 
 CATALOG_CATEGORIES = [
@@ -55,35 +62,6 @@ CATALOG_CATEGORIES = [
 ]
 
 MAX_HTTP_RESPONSE_BYTES = 20 * 1024 * 1024
-
-
-def _read_https(url, timeout=15, headers=None):
-    """Read a bounded HTTPS response using certificate verification."""
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme.casefold() != "https" or not parts.hostname:
-        raise ValueError("solo se permiten servicios HTTPS con un host válido")
-
-    path = parts.path or "/"
-    if parts.query:
-        path = f"{path}?{parts.query}"
-
-    connection = http.client.HTTPSConnection(
-        parts.hostname,
-        port=parts.port or 443,
-        timeout=timeout,
-        context=ssl.create_default_context(),
-    )
-    try:
-        connection.request("GET", path, headers=headers or {})
-        response = connection.getresponse()
-        if response.status < 200 or response.status >= 300:
-            raise RuntimeError(f"HTTP {response.status}: {response.reason}")
-        payload = response.read(MAX_HTTP_RESPONSE_BYTES + 1)
-        if len(payload) > MAX_HTTP_RESPONSE_BYTES:
-            raise RuntimeError("la respuesta del servidor excede el límite permitido")
-        return payload
-    finally:
-        connection.close()
 
 
 def _url_with_json(url):
@@ -115,6 +93,19 @@ def _service_url(directory_url, service_name, service_type):
     if len(name_parts) > 1 and name_parts[0].lower() == current_folder.lower():
         name_parts = name_parts[1:]
     return _append_rest_path(base, *name_parts, service_type)
+
+
+def _wms_capabilities_url(url):
+    """Build a WMS GetCapabilities URL while preserving required vendor parameters."""
+    parts = urllib.parse.urlsplit(url)
+    query = dict(urllib.parse.parse_qsl(parts.query, keep_blank_values=True))
+    query.update({
+        "service": "WMS",
+        "request": "GetCapabilities",
+    })
+    return urllib.parse.urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urllib.parse.urlencode(query), parts.fragment)
+    )
 
 class AboutDialog(QDialog):
     def __init__(self, parent=None, plugin_dir=None):
@@ -197,11 +188,13 @@ class ServiceStatusDialog(QDialog):
             "del certificado TLS y la ruta REST consultada responde HTTP 404. Por "
             "seguridad, el plugin no desactiva la validación de certificados.</li>"
             "</ul>"
-            "<p><b>Trabajo futuro:</b> se continuarán explorando nuevas URL oficiales y "
-            "la posible integración de servicios con inicio de sesión, siempre que exista "
-            "un mecanismo autorizado y seguro. Las credenciales no se incluirán ni se "
-            "guardarán directamente en el plugin.</p>"
-            "<p><i>Estado revisado para la versión 1.0.0.</i></p>"
+            "<p><b>Acceso privado disponible:</b> cualquier servicio HTTPS del catálogo "
+            "puede vincularse a una configuración de autenticación de QGIS. Esto permite "
+            "usar usuario y contraseña, tokens, OAuth2 o certificados cuando el servidor "
+            "los admita. Las credenciales permanecen cifradas en el perfil local de QGIS; "
+            "el plugin sólo guarda el identificador de la configuración.</p>"
+            "<p><i>La autenticación no puede reparar servidores caídos ni eludir captchas "
+            "o restricciones del proveedor.</i></p>"
         )
         layout.addWidget(details)
 
@@ -210,11 +203,71 @@ class ServiceStatusDialog(QDialog):
         layout.addWidget(buttons)
 
 
+class ServiceAccessDialog(QDialog):
+    """Selects or creates a credential set in QGIS' encrypted auth database."""
+
+    def __init__(self, service_name, service_url, authcfg="", provider_key="", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Acceso privado al servicio")
+        self.setMinimumWidth(540)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 12)
+        layout.setSpacing(10)
+
+        title = QLabel(f"<h3>{service_name}</h3>")
+        title.setWordWrap(True)
+        layout.addWidget(title)
+
+        explanation = QLabel(
+            "Seleccione una configuración existente o cree una nueva. QGIS guardará "
+            "el usuario, la contraseña, el token o el certificado en la base de "
+            "autenticación cifrada del perfil de esta PC. PeruSpatial Hub sólo "
+            "conservará el identificador de esa configuración."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+
+        resource = QLabel(f"<b>Ámbito:</b> {service_url}")
+        resource.setWordWrap(True)
+        resource.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(resource)
+
+        self.auth_selector = QgsAuthConfigSelect(self, provider_key)
+        self.auth_selector.setConfigId(authcfg or "")
+        layout.addWidget(self.auth_selector)
+
+        note = QLabel(
+            "Para dejar de usar credenciales en este servicio, seleccione "
+            "Sin autenticación. Puede administrar o borrar definitivamente las "
+            "credenciales desde el mismo selector de QGIS."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #666;")
+        layout.addWidget(note)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText("Guardar acceso")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def config_id(self):
+        return self.auth_selector.configId().strip()
+
+
 class PeruSpatialHubPanel(QDockWidget):
+    AUTH_SCOPES_SETTINGS_KEY = "PeruSpatialHub/auth_scopes"
+    NO_AUTH_SCOPE = "__none__"
+
     def __init__(self, iface, parent=None, plugin_dir=None):
         super(PeruSpatialHubPanel, self).__init__(parent)
         self.iface = iface
         self.plugin_dir = plugin_dir
+        self.auth_scopes = self.load_auth_scopes()
         self.setWindowTitle("PeruSpatial Hub")
         self.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea
@@ -440,6 +493,12 @@ class PeruSpatialHubPanel(QDockWidget):
         self.btn_about = QPushButton("Acerca de")
         self.btn_about.setStyleSheet("padding: 6px;")
 
+        self.btn_service_access = QPushButton("Configurar acceso privado")
+        self.btn_service_access.setStyleSheet(
+            "background-color: #674ea7; color: white; font-weight: bold; padding: 6px;"
+        )
+        self.btn_service_access.setVisible(False)
+
         # Grid configuration
         grid.addWidget(self.btn_add_layer, 0, 0)
         grid.addWidget(self.btn_register_browser, 0, 1)
@@ -447,6 +506,7 @@ class PeruSpatialHubPanel(QDockWidget):
         grid.addWidget(self.btn_open_browser, 1, 1)
         grid.addWidget(self.btn_register_all, 2, 0)
         grid.addWidget(self.btn_about, 2, 1)
+        grid.addWidget(self.btn_service_access, 3, 0, 1, 2)
 
         # Event handlers
         self.btn_add_layer.clicked.connect(self.add_selected_layer)
@@ -455,6 +515,7 @@ class PeruSpatialHubPanel(QDockWidget):
         self.btn_copy_url.clicked.connect(self.copy_selected_url)
         self.btn_open_browser.clicked.connect(self.open_selected_web)
         self.btn_about.clicked.connect(self.show_about_dialog)
+        self.btn_service_access.clicked.connect(self.configure_selected_service_access)
 
     def show_about_dialog(self):
         """Opens the About dialog with developer information and links."""
@@ -466,19 +527,167 @@ class PeruSpatialHubPanel(QDockWidget):
         dialog = ServiceStatusDialog(self)
         dialog.exec()
 
+    @classmethod
+    def normalize_auth_scope(cls, url):
+        """Return a stable HTTPS service scope without query strings or fragments."""
+        parts = urllib.parse.urlsplit(str(url or "").strip())
+        if parts.scheme.casefold() != "https" or not parts.hostname:
+            return ""
+        host = parts.hostname.casefold()
+        try:
+            port = parts.port
+        except ValueError:
+            return ""
+        if port and port != 443:
+            host = f"{host}:{port}"
+        path = "/" + "/".join(part for part in parts.path.split("/") if part)
+        return urllib.parse.urlunsplit(("https", host, path.rstrip("/") or "/", "", ""))
+
+    @classmethod
+    def load_auth_scopes(cls):
+        raw = QgsSettings().value(cls.AUTH_SCOPES_SETTINGS_KEY, "")
+        if not raw:
+            return {}
+        try:
+            scopes = json.loads(str(raw))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        if not isinstance(scopes, dict):
+            return {}
+        return {
+            cls.normalize_auth_scope(scope): str(authcfg).strip()
+            for scope, authcfg in scopes.items()
+            if cls.normalize_auth_scope(scope) and str(authcfg).strip()
+        }
+
+    def save_auth_scopes(self):
+        settings = QgsSettings()
+        if self.auth_scopes:
+            settings.setValue(
+                self.AUTH_SCOPES_SETTINGS_KEY,
+                json.dumps(self.auth_scopes, ensure_ascii=False, sort_keys=True),
+            )
+        else:
+            settings.remove(self.AUTH_SCOPES_SETTINGS_KEY)
+
+    def auth_config_for_url(self, url):
+        """Return the auth config for the most specific matching service scope."""
+        target = urllib.parse.urlsplit(self.normalize_auth_scope(url))
+        if not target.hostname:
+            return ""
+        matches = []
+        for scope, authcfg in self.auth_scopes.items():
+            candidate = urllib.parse.urlsplit(scope)
+            if (candidate.scheme, candidate.netloc) != (target.scheme, target.netloc):
+                continue
+            candidate_path = candidate.path.rstrip("/") or "/"
+            target_path = target.path.rstrip("/") or "/"
+            path_matches = (
+                candidate_path == "/"
+                or target_path == candidate_path
+                or target_path.startswith(candidate_path + "/")
+            )
+            if path_matches:
+                matches.append((len(candidate_path), authcfg))
+        matched_authcfg = max(matches, default=(0, ""))[1]
+        return "" if matched_authcfg == self.NO_AUTH_SCOPE else matched_authcfg
+
+    @staticmethod
+    def auth_provider_key(service):
+        stype = (service or {}).get("stype", "")
+        if stype == "wms":
+            return "wms"
+        if stype in ("arcgisfeatureserver", "arcgis_vector_layer"):
+            return "arcgisfeatureserver"
+        return "arcgismapserver"
+
+    def configure_selected_service_access(self):
+        selected_items = self.tree_widget.selectedItems()
+        if not selected_items:
+            return
+        service = selected_items[0].data(0, Qt.ItemDataRole.UserRole) or {}
+        service_url = service.get("service_url") or service.get("url")
+        scope = self.normalize_auth_scope(service_url)
+        if not scope:
+            QMessageBox.warning(
+                self,
+                "Acceso no disponible",
+                "El elemento seleccionado no tiene un servicio HTTPS válido.",
+            )
+            return
+
+        current_authcfg = self.auth_config_for_url(service_url)
+        dialog = ServiceAccessDialog(
+            service.get("name") or service.get("institution") or "Servicio",
+            scope,
+            current_authcfg,
+            self.auth_provider_key(service),
+            self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        authcfg = dialog.config_id()
+        if authcfg:
+            self.auth_scopes[scope] = authcfg
+            message = (
+                "El acceso quedó vinculado a este servicio en el perfil local de QGIS. "
+                "Las credenciales permanecen cifradas en esta PC."
+            )
+        else:
+            # Keep an explicit anonymous override at this scope. This matters when
+            # a broader parent directory uses authentication but one child does not.
+            self.auth_scopes[scope] = self.NO_AUTH_SCOPE
+            message = "Este servicio volverá a utilizarse sin autenticación."
+        self.save_auth_scopes()
+        # Rebuild lazy nodes so an authenticated directory can reveal content
+        # which was not visible to the previous anonymous request.
+        self.populate_tree()
+        self._directory_catalog_loaded = False
+        self.update_buttons_state(None)
+        self.filter_services()
+        self.iface.reloadConnections()
+        QMessageBox.information(self, "Acceso actualizado", message)
+
+    def read_service_https(self, url, timeout=15, headers=None, authcfg=""):
+        """Read HTTPS through QGIS, applying proxy, TLS and auth configuration."""
+        parts = urllib.parse.urlsplit(url)
+        if parts.scheme.casefold() != "https" or not parts.hostname:
+            raise ValueError("solo se permiten servicios HTTPS con un host válido")
+
+        request = QNetworkRequest(QUrl(url))
+        for name, value in (headers or {}).items():
+            request.setRawHeader(str(name).encode("ascii"), str(value).encode("utf-8"))
+        if hasattr(request, "setTransferTimeout"):
+            request.setTransferTimeout(max(1, int(timeout * 1000)))
+
+        reply = QgsNetworkAccessManager.blockingGet(request, authcfg or "", True)
+        if reply.error() != QNetworkReply.NetworkError.NoError:
+            raise RuntimeError(reply.errorString() or "error de red sin descripción")
+
+        status_value = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+        status = int(status_value) if status_value is not None else 0
+        if status and (status < 200 or status >= 300):
+            raise RuntimeError(f"HTTP {status}")
+        payload = bytes(reply.content())
+        if len(payload) > MAX_HTTP_RESPONSE_BYTES:
+            raise RuntimeError("la respuesta del servidor excede el límite permitido")
+        return payload
+
     def fetch_arcgis_json(self, url, timeout=15, attempts=2):
         """Read ArcGIS REST metadata with one retry for intermittent public servers."""
         request_url = _url_with_json(url)
         last_error = None
         for attempt in range(attempts):
             try:
-                payload = _read_https(
+                payload = self.read_service_https(
                     request_url,
                     timeout=timeout,
                     headers={
-                        "User-Agent": "PeruSpatial-Hub-QGIS/1.0.0",
+                        "User-Agent": "PeruSpatial-Hub-QGIS/1.0.1",
                         "Accept": "application/json",
                     },
+                    authcfg=self.auth_config_for_url(url),
                 )
                 data = json.loads(payload.decode("utf-8-sig"))
                 if not isinstance(data, dict):
@@ -491,7 +700,6 @@ class PeruSpatialHubPanel(QDockWidget):
                 return data
             except (
                 OSError,
-                http.client.HTTPException,
                 ValueError,
                 RuntimeError,
                 json.JSONDecodeError,
@@ -599,10 +807,31 @@ class PeruSpatialHubPanel(QDockWidget):
             },
             {
                 "institution": "IGP",
-                "name": "IGP Sismos y Vulcanología (WMS)",
+                "name": "IGP Directorio Geoespacial (REST)",
+                "url": "https://ide.igp.gob.pe/arcgis/rest/services",
+                "stype": "arcgis_rest",
+                "category": "Clima y Riesgos"
+            },
+            {
+                "institution": "IGP",
+                "name": "IGP Catálogo General (WMS)",
                 "url": "https://ide.igp.gob.pe/geoserver/ows?service=wms",
                 "stype": "wms",
                 "category": "Clima y Riesgos"
+            },
+            {
+                "institution": "IGP",
+                "name": "IGP Condición NDVI - últimos 30 días (WMS)",
+                "url": "https://ide.igp.gob.pe/geoserver/SCAH_NDVI/wms?service=wms",
+                "stype": "wms",
+                "category": "Medio Ambiente"
+            },
+            {
+                "institution": "IGP",
+                "name": "IGP Anomalías NDVI - últimos 30 días (WMS)",
+                "url": "https://ide.igp.gob.pe/geoserver/SCAHanomNDVI/wms?service=wms",
+                "stype": "wms",
+                "category": "Medio Ambiente"
             },
         ]
 
@@ -629,12 +858,11 @@ class PeruSpatialHubPanel(QDockWidget):
                 "institution": s["institution"],
                 "category": s["category"],
                 "crs_warning": s.get("crs_warning", False),
-                "is_loaded": not is_arcgis
+                "is_loaded": False
             })
-            if is_arcgis:
-                # Add a dummy child to show expansion arrow
-                dummy = QTreeWidgetItem(server_item)
-                dummy.setText(0, "Cargando...")
+            # Add a dummy child so both REST and WMS catalogs can be expanded.
+            dummy = QTreeWidgetItem(server_item)
+            dummy.setText(0, "Expandir para explorar...")
 
         # Keep root items expanded, but explorer root collapsed by default
         self.tree_widget.expandAll()
@@ -849,7 +1077,7 @@ class PeruSpatialHubPanel(QDockWidget):
     def on_item_expanded(self, item):
         """Called when a tree node is expanded. Loads subfolders/services dynamically."""
         node_data = item.data(0, Qt.ItemDataRole.UserRole)
-        if node_data and node_data.get("type") in ["server", "folder", "arcgis_service"] and not node_data.get("is_loaded", False):
+        if node_data and node_data.get("type") in ["server", "folder", "arcgis_service", "ogc_service"] and not node_data.get("is_loaded", False):
             self.load_dynamic_node(item)
 
     def load_dynamic_node(self, item):
@@ -937,6 +1165,20 @@ class PeruSpatialHubPanel(QDockWidget):
                 self.populate_arcgis_service_layers(item, node_data, data)
                 loaded_ok = True
 
+            elif stype == "wms":
+                capabilities_url = _wms_capabilities_url(url)
+                payload = self.read_service_https(
+                    capabilities_url,
+                    timeout=30,
+                    headers={
+                        "User-Agent": "PeruSpatial-Hub-QGIS/1.1.0",
+                        "Accept": "application/xml,text/xml",
+                    },
+                    authcfg=self.auth_config_for_url(url),
+                )
+                self.populate_wms_layers(item, node_data, payload)
+                loaded_ok = True
+
             else:
                 raise RuntimeError(f"Tipo REST no compatible: {stype}")
 
@@ -956,6 +1198,105 @@ class PeruSpatialHubPanel(QDockWidget):
             # is expanded and its nested layers are loaded on demand.
             if self.search_input.text().strip() and not self._discovering_catalog:
                 self.filter_services()
+
+    @staticmethod
+    def xml_local_name(tag):
+        return str(tag).rsplit("}", 1)[-1]
+
+    def populate_wms_layers(self, service_item, service_data, payload):
+        """Populate a WMS catalog with importable named layers from GetCapabilities."""
+        try:
+            root = ET.fromstring(payload)
+        except ET.ParseError as exc:
+            raise RuntimeError(f"GetCapabilities WMS no devolvió XML válido: {exc}")
+
+        capability = next(
+            (node for node in root.iter() if self.xml_local_name(node.tag) == "Capability"),
+            None,
+        )
+        root_layer = next(
+            (
+                child for child in list(capability or [])
+                if self.xml_local_name(child.tag) == "Layer"
+            ),
+            None,
+        )
+        if root_layer is None:
+            raise RuntimeError("GetCapabilities WMS no contiene un catálogo de capas")
+
+        service_url = _clean_rest_url(service_data["url"])
+        institution = service_data["institution"]
+        category = service_data["category"]
+        created_layers = 0
+
+        def child_text(element, local_name):
+            child = next(
+                (
+                    node for node in list(element)
+                    if self.xml_local_name(node.tag) == local_name
+                ),
+                None,
+            )
+            return (child.text or "").strip() if child is not None else ""
+
+        def add_layer_node(xml_layer, parent_item, inherited_crs):
+            nonlocal created_layers
+            title = child_text(xml_layer, "Title") or "Grupo WMS"
+            layer_name = child_text(xml_layer, "Name")
+            own_crs = [
+                (node.text or "").strip()
+                for node in list(xml_layer)
+                if self.xml_local_name(node.tag) in ("CRS", "SRS") and (node.text or "").strip()
+            ]
+            available_crs = list(dict.fromkeys(own_crs or inherited_crs))
+            children = [
+                node for node in list(xml_layer)
+                if self.xml_local_name(node.tag) == "Layer"
+            ]
+
+            if layer_name:
+                tree_item = QTreeWidgetItem(parent_item)
+                tree_item.setText(0, title)
+                tree_item.setText(1, "Capa WMS")
+                tree_item.setData(0, Qt.ItemDataRole.UserRole, {
+                    "type": "wms_layer",
+                    "stype": "wms",
+                    "url": service_data["url"],
+                    "service_url": service_url,
+                    "layer_name": layer_name,
+                    "name": title,
+                    "institution": institution,
+                    "category": category,
+                    "crs_options": available_crs,
+                    "description": f"Capa WMS en vivo publicada por {institution}.",
+                    "is_loaded": True,
+                })
+                parent_for_children = tree_item
+                created_layers += 1
+            else:
+                parent_for_children = parent_item
+                if children and parent_item is not service_item:
+                    group_item = QTreeWidgetItem(parent_item)
+                    group_item.setText(0, title)
+                    group_item.setText(1, "Grupo WMS")
+                    group_item.setFont(0, QFont("Segoe UI", 9, QFont.Weight.Bold))
+                    group_item.setData(0, Qt.ItemDataRole.UserRole, {
+                        "type": "wms_group",
+                        "stype": "wms",
+                        "url": service_data["url"],
+                        "name": title,
+                        "institution": institution,
+                        "category": category,
+                        "is_loaded": True,
+                    })
+                    parent_for_children = group_item
+
+            for child_layer in children:
+                add_layer_node(child_layer, parent_for_children, available_crs)
+
+        add_layer_node(root_layer, service_item, [])
+        if not created_layers:
+            raise RuntimeError("El servidor WMS respondió, pero no publicó capas con nombre")
 
     def populate_arcgis_service_layers(self, service_item, service_data, metadata):
         """Create importable leaf nodes for a MapServer or FeatureServer."""
@@ -1059,7 +1400,7 @@ class PeruSpatialHubPanel(QDockWidget):
         s = item.data(0, Qt.ItemDataRole.UserRole)
         if s is None:
             return
-        if s.get("type") in ["server", "folder", "arcgis_service", "arcgis_group", "ogc_service"]:
+        if s.get("type") in ["server", "folder", "arcgis_service", "arcgis_group", "ogc_service", "wms_group"]:
             item.setExpanded(not item.isExpanded())
         else:
             self.add_selected_layer()
@@ -1091,7 +1432,15 @@ class PeruSpatialHubPanel(QDockWidget):
             self.btn_register_browser.setEnabled(False)
             self.btn_copy_url.setEnabled(False)
             self.btn_open_browser.setEnabled(False)
+            self.btn_service_access.setEnabled(False)
+            self.btn_service_access.setText("Configurar acceso privado")
         else:
+            service_url = s.get("service_url") or s.get("url", "")
+            has_auth = bool(self.auth_config_for_url(service_url))
+            self.btn_service_access.setEnabled(bool(self.normalize_auth_scope(service_url)))
+            self.btn_service_access.setText(
+                "Acceso privado configurado" if has_auth else "Configurar acceso privado"
+            )
             ntype = s.get("type", "service")
             crs_advisory = ""
             if s.get("crs_warning", False):
@@ -1142,7 +1491,7 @@ class PeruSpatialHubPanel(QDockWidget):
                     <p><b>Institución:</b> {s['institution']}</p>
                     <p><b>Categoría:</b> {s['category']}</p>
                     <p><b>Tipo:</b> Servicio WMS oficial verificado</p>
-                    <p><b>Descripción:</b> Registre esta conexión para explorar sus capas desde la sección WMS/WMTS del panel Explorador de QGIS.</p>
+                    <p><b>Descripción:</b> Expanda este nodo para consultar el catálogo WMS y añadir cualquiera de sus capas directamente al mapa.</p>
                     <p><b>URL del Servidor:</b><br><a href='{s['url']}'>{s['url']}</a></p>
                 """
                 self.metadata_panel.setHtml(html)
@@ -1150,7 +1499,7 @@ class PeruSpatialHubPanel(QDockWidget):
                 self.btn_register_browser.setEnabled(True)
                 self.btn_copy_url.setEnabled(True)
                 self.btn_open_browser.setEnabled(True)
-            elif ntype in ["server", "folder", "arcgis_service", "arcgis_group"]:
+            elif ntype in ["server", "folder", "arcgis_service", "arcgis_group", "wms_group"]:
                 html = f"""
                     <h3>{s['name']}</h3>
                     <p><b>Institución:</b> {s['institution']}</p>
@@ -1212,6 +1561,9 @@ class PeruSpatialHubPanel(QDockWidget):
     def create_arcgis_vector_layer(self, layer_url, name, metadata=None):
         uri = QgsDataSourceUri()
         uri.setParam("url", _clean_rest_url(layer_url))
+        authcfg = self.auth_config_for_url(layer_url)
+        if authcfg:
+            uri.setAuthConfigId(authcfg)
         layer = QgsVectorLayer(uri.uri(False), name, "arcgisfeatureserver")
         self.apply_metadata_crs(layer, metadata or {})
         return layer
@@ -1219,6 +1571,9 @@ class PeruSpatialHubPanel(QDockWidget):
     def create_arcgis_map_layer(self, service_url, layer_id, name, metadata=None):
         uri = QgsDataSourceUri()
         uri.setParam("url", _clean_rest_url(service_url))
+        authcfg = self.auth_config_for_url(service_url)
+        if authcfg:
+            uri.setAuthConfigId(authcfg)
         uri.setParam("layer", str(layer_id))
         uri.setParam("format", "png32")
         layer = QgsRasterLayer(uri.uri(False), name, "arcgismapserver")
@@ -1228,20 +1583,45 @@ class PeruSpatialHubPanel(QDockWidget):
     def create_arcgis_image_layer(self, url, name, metadata=None):
         uri = QgsDataSourceUri()
         uri.setParam("url", _clean_rest_url(url))
+        authcfg = self.auth_config_for_url(url)
+        if authcfg:
+            uri.setAuthConfigId(authcfg)
         layer = QgsRasterLayer(uri.uri(False), name, "arcgisimageserver")
         if not layer.isValid():
             layer = QgsRasterLayer(uri.uri(False), name, "arcgismapserver")
         self.apply_metadata_crs(layer, metadata or {})
         return layer
 
+    def create_wms_layer(self, service_url, layer_name, name, crs_options=None):
+        """Create a QGIS WMS raster layer for one named GetCapabilities entry."""
+        options = list(crs_options or [])
+        project_authid = QgsProject.instance().crs().authid()
+        preferred_crs = next(
+            (
+                candidate for candidate in (project_authid, "EPSG:3857", "EPSG:4326")
+                if candidate and candidate in options
+            ),
+            options[0] if options else (project_authid or "EPSG:4326"),
+        )
+        uri = QgsDataSourceUri()
+        uri.setParam("url", service_url)
+        uri.setParam("layers", layer_name)
+        uri.setParam("styles", "")
+        uri.setParam("format", "image/png")
+        uri.setParam("crs", preferred_crs)
+        authcfg = self.auth_config_for_url(service_url)
+        if authcfg:
+            uri.setAuthConfigId(authcfg)
+        return QgsRasterLayer(uri.uri(False), name, "wms")
+
     def add_selected_layer(self):
-        """Add one native vector or raster layer from an ArcGIS REST endpoint."""
+        """Add one native ArcGIS REST or WMS layer."""
         selected_items = self.tree_widget.selectedItems()
         if not selected_items:
             return
 
         s = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
-        if not s or s.get("type") in ["server", "folder", "arcgis_service", "arcgis_group", "ogc_service"]:
+        if not s or s.get("type") in ["server", "folder", "arcgis_service", "arcgis_group", "ogc_service", "wms_group"]:
             return
 
         from qgis.PyQt.QtWidgets import QApplication
@@ -1252,7 +1632,7 @@ class PeruSpatialHubPanel(QDockWidget):
         metadata = {}
 
         self.iface.messageBar().pushMessage(
-            "PeruSpatial Hub", f"Consultando capa REST: {name}...", level=0, duration=2
+            "PeruSpatial Hub", f"Consultando capa: {name}...", level=0, duration=2
         )
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         QApplication.processEvents()
@@ -1296,15 +1676,26 @@ class PeruSpatialHubPanel(QDockWidget):
                 if not layer.isValid():
                     attempts.append(f"Raster ImageServer: {self.provider_error(layer)}")
 
+            elif layer_type == "wms_layer":
+                layer = self.create_wms_layer(
+                    s["service_url"],
+                    s["layer_name"],
+                    name,
+                    s.get("crs_options"),
+                )
+                if not layer.isValid():
+                    attempts.append(f"WMS: {self.provider_error(layer)}")
+
             else:
                 attempts.append(f"Tipo no importable: {layer_type}")
 
             if layer and layer.isValid():
                 QgsProject.instance().addMapLayer(layer)
                 data_kind = "vectorial" if isinstance(layer, QgsVectorLayer) else "raster"
+                source_kind = "WMS" if layer_type == "wms_layer" else "REST"
                 self.iface.messageBar().pushMessage(
                     "PeruSpatial Hub",
-                    f"Capa {data_kind} REST '{name}' añadida correctamente.",
+                    f"Capa {data_kind} {source_kind} '{name}' añadida correctamente.",
                     level=3,
                     duration=4,
                 )
@@ -1317,9 +1708,9 @@ class PeruSpatialHubPanel(QDockWidget):
         detail = "\n".join(f"- {message}" for message in attempts) or "- Error desconocido"
         QMessageBox.warning(
             self,
-            "Error al importar ArcGIS REST",
+            "Error al importar capa",
             f"No se pudo cargar la capa '{name}'.\n\n{detail}\n\n"
-            "La capa no se intentó cargar mediante WMS.",
+            "Revise la disponibilidad del servicio y la compatibilidad del proveedor QGIS.",
         )
 
     def register_selected_connection(self):
@@ -1344,7 +1735,7 @@ class PeruSpatialHubPanel(QDockWidget):
                 else "arcgis_mapserver"
             )
 
-        self.write_connection(name, url, stype)
+        self.write_connection(name, url, stype, self.auth_config_for_url(url))
 
         connection_section = "WMS/WMTS" if stype == "wms" else "ArcGIS REST"
 
@@ -1371,7 +1762,12 @@ class PeruSpatialHubPanel(QDockWidget):
             count = 0
             for s in self.live_servers:
                 full_name = f"{s['institution']} - {s['name']}"
-                self.write_connection(full_name, s["url"], s["stype"])
+                self.write_connection(
+                    full_name,
+                    s["url"],
+                    s["stype"],
+                    self.auth_config_for_url(s["url"]),
+                )
                 count += 1
             
             self.iface.reloadConnections()
@@ -1383,7 +1779,7 @@ class PeruSpatialHubPanel(QDockWidget):
                 "Revise las secciones 'ArcGIS REST Servers' y 'WMS/WMTS' del panel Explorador."
             )
 
-    def write_connection(self, name, url, stype):
+    def write_connection(self, name, url, stype, authcfg=""):
         """Writes the actual connection settings to QSettings."""
         settings = QgsSettings()
         
@@ -1394,11 +1790,11 @@ class PeruSpatialHubPanel(QDockWidget):
                 key = f"qgis/connections-arcgismapserver/{name}/"
             
             settings.setValue(key + "url", url)
-            settings.setValue(key + "authcfg", "")
+            settings.setValue(key + "authcfg", authcfg or "")
         elif stype == "wms":
             key = f"qgis/connections-wms/{name}/"
             settings.setValue(key + "url", url)
-            settings.setValue(key + "authcfg", "")
+            settings.setValue(key + "authcfg", authcfg or "")
         self.iface.reloadConnections()
 
     def copy_selected_url(self):

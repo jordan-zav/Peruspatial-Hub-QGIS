@@ -1,6 +1,6 @@
 # PeruSpatial Hub - QGIS Plugin
 
-Versión estable: 1.0.0
+Versión estable: 1.0.2
 
 **PeruSpatial Hub** es un plugin para QGIS diseñado para centralizar y facilitar el acceso a la Infraestructura de Datos Espaciales (IDE) de las principales instituciones públicas del Perú. 
 
@@ -20,7 +20,6 @@ PeruSpatial Hub se distribuye bajo la GNU General Public License v3.0. Puede usa
 4. **Integración con el Explorador de QGIS**: Registra de forma individual o masiva todas las conexiones oficiales del catálogo directamente en el panel **Explorador** nativo de QGIS (bajo las categorías WMS/WMTS y ArcGIS REST).
 5. **Asistente de Precisión de CRS / Datum**: Panel de advertencia dinámico que le guiará para evitar errores al trabajar con datums mixtos (especialmente la transformación del datum histórico **PSAD56** al moderno **WGS84 / SIRGAS UTM**), garantizando la precisión métrica obligatoria en trabajos arqueológicos y geofísicos.
 6. **Estado Transparente de Fuentes**: El botón de información junto al buscador explica qué instituciones fueron investigadas, cuáles presentan fallas técnicas y cuáles requieren identificación. También documenta la exploración futura de accesos autenticados mediante mecanismos oficiales y seguros.
-
 ---
 
 ## 📂 Servidores de información integrados y verificados
@@ -30,7 +29,7 @@ La disponibilidad indicada fue comprobada el 15 de julio de 2026. Como son servi
 *   **INGEMMET (GEOCATMIN)**: dos directorios ArcGIS REST activos con catastro minero, geología, geoquímica y otros servicios publicados por la institución.
 *   **IGN e IDEP**: cartografía nacional y directorios institucionales publicados mediante ArcGIS REST.
 *   **ANA mediante IDEP**: servicio institucional con humedales costeros, manantiales, glaciares, estaciones hidrometeorológicas y unidades hidrográficas.
-*   **IGP**: conexión WMS oficial registrable en el panel Explorador de QGIS. Las capas disponibles dependen del catálogo publicado por el IGP.
+*   **IGP**: directorio ArcGIS REST oficial, catálogo WMS general y accesos WMS directos a Condición NDVI y Anomalías NDVI de los últimos 30 días. Incluye las capas empleadas por Zonifica Perú, estaciones isotópicas, monitoreo sísmico y volcánico, mapas base y otras colecciones públicas. Tanto las capas REST como las WMS pueden explorarse y añadirse directamente al mapa.
 *   **MINAM**: directorio ArcGIS REST del Geoservidor MINAM, con servicios ambientales y de zonificación publicados actualmente.
 *   **SERNANP**: directorio ArcGIS REST con gestión, monitoreo y cartografía de áreas naturales protegidas.
 *   **SERFOR**: nuevo directorio oficial de GeoSERFOR con servicios forestales, imágenes, geoprocesamiento y visor.
@@ -44,7 +43,7 @@ La disponibilidad indicada fue comprobada el 15 de julio de 2026. Como son servi
 *   **COFOPRI**: el dominio histórico responde con una cadena de certificado incompleta y el endpoint REST devuelve 404. No se integrará desactivando la validación TLS.
 *   **SUNARP**: el Visor BGR requiere DNI vigente, fecha de emisión y captcha. No existe un directorio REST anónimo verificado que el plugin pueda registrar responsablemente.
 
-El botón de información de la interfaz mantiene este diagnóstico visible dentro de QGIS. Se continuarán investigando nuevas URL oficiales y mecanismos de autenticación permitidos; el plugin no incluirá ni almacenará directamente credenciales de usuario.
+El botón de información de la interfaz mantiene este diagnóstico visible dentro de QGIS. El plugin no incluye credenciales, no elude captchas y no desactiva la validación de certificados.
 
 ---
 

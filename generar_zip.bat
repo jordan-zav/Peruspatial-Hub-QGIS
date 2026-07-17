@@ -6,8 +6,35 @@ set "PLUGIN_NAME=peruspatial_hub"
 set "DIST_DIR=%SCRIPT_DIR%dist"
 set "STAGE_DIR=%DIST_DIR%\_staging"
 
-for /f "tokens=2 delims==" %%V in ('findstr /b /c:"version=" "%SCRIPT_DIR%metadata.txt"') do set "VERSION=%%V"
-if not defined VERSION set "VERSION=sin_version"
+set "VERSION=%~1"
+if not defined VERSION (
+  echo.
+  set /p "VERSION=Indique la version a empaquetar (ejemplo 1.2.0): "
+)
+
+if not defined VERSION (
+  echo ERROR: debe indicar una version.
+  exit /b 1
+)
+
+powershell -NoProfile -Command "if ($env:VERSION -notmatch '^[0-9]+(\.[0-9]+)+$') { exit 1 }"
+if errorlevel 1 (
+  echo ERROR: version no valida. Use numeros separados por puntos, por ejemplo 1.2.0.
+  exit /b 1
+)
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$path = Join-Path $env:SCRIPT_DIR 'metadata.txt';" ^
+  "$content = [IO.File]::ReadAllText($path);" ^
+  "$pattern = [regex]::new('(?m)^version=.*$');" ^
+  "if (-not $pattern.IsMatch($content)) { exit 2 };" ^
+  "$content = $pattern.Replace($content, 'version=' + $env:VERSION, 1);" ^
+  "[IO.File]::WriteAllText($path, $content, [Text.UTF8Encoding]::new($false))"
+
+if errorlevel 1 (
+  echo ERROR: no se pudo actualizar la version en metadata.txt.
+  exit /b 1
+)
 
 set "ZIP_FILE=%DIST_DIR%\PeruSpatial_Hub_QGIS_v%VERSION%.zip"
 

@@ -1,9 +1,9 @@
 [general]
 name=PeruSpatial Hub
 qgisMinimumVersion=3.34
-description=Explora servicios geoespaciales oficiales del Perú mediante ArcGIS REST y WMS, y carga capas raster y vectoriales nativas en QGIS.
-about=PeruSpatial Hub consulta en vivo directorios ArcGIS REST y servicios WMS oficiales cuya disponibilidad ha sido verificada. Descubre servicios y subcapas, carga capas mediante proveedores nativos de QGIS y permite registrar conexiones WMS en el panel Explorador.
-version=1.0.0
+description=Explore official geospatial services exclusively from Peru via ArcGIS REST and WMS, and load native raster and vector layers in QGIS.
+about=PeruSpatial Hub consulta en vivo directorios ArcGIS REST y servicios WMS oficiales cuya disponibilidad ha sido verificada. Descubre servicios y subcapas, carga capas mediante proveedores nativos de QGIS y permite registrar conexiones oficiales en el panel Explorador.
+version=1.0.2
 author=Jordan Zavaleta
 email=jordanzav@gisgeo.dev
 repository=https://github.com/jordan-zav/peruspatial-hub-qgis
@@ -14,4 +14,4 @@ icon=logo_solo.png
 tags=peru, geology, mining, geophysics, archaeology, raster, vector, arcgis, rest, wms, idep, oefa
 experimental=False
 deprecated=False
-changelog=1.0.0 - Primera versión estable GPLv3. Exploración recursiva, búsqueda profunda, capas raster y vectoriales, WMS del IGP, directorios REST verificados, OEFA PIFA y estado transparente de fuentes no disponibles.
+changelog=1.0.2 - Integración del directorio ArcGIS REST del IGP, exploración y carga directa de capas WMS, accesos NDVI y empaquetado con versión indicada por el usuario. 1.0.1 - Corrección de descripción en inglés y compatibilidad con Qt6 (PyQt6). 1.0.0 - Primera versión estable GPLv3.
