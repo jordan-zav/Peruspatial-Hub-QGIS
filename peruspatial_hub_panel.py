@@ -10,9 +10,8 @@ import urllib.parse
 import json
 import time
 import unicodedata
-import xml.etree.ElementTree as ET
 
-from qgis.PyQt.QtCore import Qt, QSize, QTimer, QUrl
+from qgis.PyQt.QtCore import Qt, QSize, QTimer, QUrl, QByteArray, QXmlStreamReader
 from qgis.PyQt.QtNetwork import QNetworkReply, QNetworkRequest
 from qgis.PyQt.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -336,10 +335,12 @@ class PeruSpatialHubPanel(QDockWidget):
         # unnecessary network traffic when the catalog is only browsed manually.
         self._directory_catalog_loaded = False
         self._discovering_catalog = False
+        self._search_cancelled = False
         self.search_timer = QTimer(self)
         self.search_timer.setSingleShot(True)
         self.search_timer.setInterval(500)
         self.search_timer.timeout.connect(self.perform_deep_search)
+        self.visibilityChanged.connect(self.on_visibility_changed)
         
         # Connect signals
         self.search_input.textChanged.connect(self.schedule_filter_services)
@@ -864,9 +865,9 @@ class PeruSpatialHubPanel(QDockWidget):
             dummy = QTreeWidgetItem(server_item)
             dummy.setText(0, "Expandir para explorar...")
 
-        # Keep root items expanded, but explorer root collapsed by default
-        self.tree_widget.expandAll()
-        explorer_root.setExpanded(False)
+        # Start with every repository and folder closed. Remote catalogs are
+        # loaded only when the user explicitly expands one of them.
+        self.tree_widget.collapseAll()
 
     def friendly_type(self, type_str):
         """Translates technical connection type to friendly name."""
@@ -888,7 +889,7 @@ class PeruSpatialHubPanel(QDockWidget):
         return "".join(char for char in normalized if not unicodedata.combining(char)).casefold()
 
     def item_matches_search(self, item, search_text, selected_category):
-        """Return whether one tree node matches the active text/category filters."""
+        """Match only the visible node name, never metadata or technical fields."""
         data = item.data(0, Qt.ItemDataRole.UserRole) or {}
         category = data.get("category")
         category_matches = (
@@ -901,27 +902,7 @@ class PeruSpatialHubPanel(QDockWidget):
         if not search_text:
             return True
 
-        searchable_values = [
-            item.text(0),
-            item.text(1),
-            data.get("name", ""),
-            data.get("institution", ""),
-            data.get("description", ""),
-            data.get("url", ""),
-        ]
-        searchable_values.extend(data.get("tags", []))
-        return any(
-            search_text in self.normalize_search_text(value)
-            for value in searchable_values
-        )
-
-    @staticmethod
-    def set_descendants_hidden(item, hidden):
-        """Apply visibility to all descendants of a matching container."""
-        for index in range(item.childCount()):
-            child = item.child(index)
-            child.setHidden(hidden)
-            PeruSpatialHubPanel.set_descendants_hidden(child, hidden)
+        return search_text in self.normalize_search_text(item.text(0))
 
     def filter_tree_item(self, item, search_text, selected_category):
         """Filter a complete branch and retain ancestors of matching layers."""
@@ -935,11 +916,6 @@ class PeruSpatialHubPanel(QDockWidget):
 
         visible = own_match or descendant_match
         item.setHidden(not visible)
-
-        # When a folder/service itself matches, show its complete loaded subtree.
-        # This makes searches such as 100k reveal the layers contained by it.
-        if own_match and search_text:
-            self.set_descendants_hidden(item, False)
 
         if search_text and descendant_match:
             item.setExpanded(True)
@@ -958,10 +934,31 @@ class PeruSpatialHubPanel(QDockWidget):
     def schedule_filter_services(self):
         """Filter loaded nodes now and defer remote directory discovery."""
         self.filter_services()
-        if self.search_input.text().strip():
+        if self.search_input.text().strip() and self.isVisible():
+            self._search_cancelled = False
             self.search_timer.start()
         else:
             self.search_timer.stop()
+
+    def cancel_pending_search(self):
+        """Stop deferred work and prevent further catalog requests."""
+        self._search_cancelled = True
+        self.search_timer.stop()
+
+    def on_visibility_changed(self, visible):
+        """Cancel remote discovery as soon as the dock panel is hidden."""
+        if visible:
+            self._search_cancelled = False
+        else:
+            self.cancel_pending_search()
+
+    def closeEvent(self, event):
+        self.cancel_pending_search()
+        super().closeEvent(event)
+
+    def hideEvent(self, event):
+        self.cancel_pending_search()
+        super().hideEvent(event)
 
     def iter_tree_items(self, parent=None):
         """Yield all items below a parent, or the complete tree when omitted."""
@@ -979,6 +976,9 @@ class PeruSpatialHubPanel(QDockWidget):
 
     def discover_directory_branch(self, item, visited):
         """Load REST folders/services recursively, without loading every service layer."""
+        if self._search_cancelled or not self.isVisible():
+            return
+
         data = item.data(0, Qt.ItemDataRole.UserRole) or {}
         if data.get("type") not in ("server", "folder"):
             return
@@ -990,10 +990,14 @@ class PeruSpatialHubPanel(QDockWidget):
 
         if not data.get("is_loaded", False):
             self.load_dynamic_node(item)
+            if self._search_cancelled or not self.isVisible():
+                return
 
         # Snapshot children because loading a branch replaces its dummy node.
         children = [item.child(index) for index in range(item.childCount())]
         for child in children:
+            if self._search_cancelled or not self.isVisible():
+                return
             child_data = child.data(0, Qt.ItemDataRole.UserRole) or {}
             if child_data.get("type") == "folder":
                 self.discover_directory_branch(child, visited)
@@ -1002,6 +1006,8 @@ class PeruSpatialHubPanel(QDockWidget):
         """Load sublayers only for services whose name/path matches the query."""
         candidates = []
         for item in self.iter_tree_items():
+            if self._search_cancelled or not self.isVisible():
+                return
             data = item.data(0, Qt.ItemDataRole.UserRole) or {}
             if (
                 data.get("type") == "arcgis_service"
@@ -1011,11 +1017,13 @@ class PeruSpatialHubPanel(QDockWidget):
                 candidates.append(item)
 
         for item in candidates:
+            if self._search_cancelled or not self.isVisible():
+                return
             self.load_dynamic_node(item)
 
     def perform_deep_search(self):
         """Discover unopened REST directories so their services are searchable."""
-        if self._discovering_catalog:
+        if self._discovering_catalog or self._search_cancelled or not self.isVisible():
             return
 
         search_text = self.normalize_search_text(self.search_input.text().strip())
@@ -1047,16 +1055,21 @@ class PeruSpatialHubPanel(QDockWidget):
         try:
             visited = set()
             for top_index in range(self.tree_widget.topLevelItemCount()):
+                if self._search_cancelled or not self.isVisible():
+                    break
                 top_item = self.tree_widget.topLevelItem(top_index)
                 for item in list(self.iter_tree_items(top_item)):
+                    if self._search_cancelled or not self.isVisible():
+                        break
                     data = item.data(0, Qt.ItemDataRole.UserRole) or {}
                     if data.get("type") == "server":
                         self.discover_directory_branch(item, visited)
 
-            self._directory_catalog_loaded = True
-            self.load_matching_service_layers(
-                search_text, self.category_combo.currentText()
-            )
+            if not self._search_cancelled and self.isVisible():
+                self._directory_catalog_loaded = True
+                self.load_matching_service_layers(
+                    search_text, self.category_combo.currentText()
+                )
         finally:
             self._discovering_catalog = False
             QApplication.restoreOverrideCursor()
@@ -1094,11 +1107,20 @@ class PeruSpatialHubPanel(QDockWidget):
         loading_node = QTreeWidgetItem(item)
         loading_node.setText(0, "Cargando...")
         QApplication.processEvents()
+        if self._search_cancelled or not self.isVisible():
+            if loading_node.parent() is item:
+                item.removeChild(loading_node)
+            QApplication.restoreOverrideCursor()
+            return
 
         loaded_ok = False
         try:
             if stype == "arcgis_rest":
-                data = self.fetch_arcgis_json(url)
+                data = self.fetch_arcgis_json(
+                    url,
+                    timeout=6 if self._discovering_catalog else 15,
+                    attempts=1 if self._discovering_catalog else 2,
+                )
                     
                 # Folders
                 for f in data.get("folders", []):
@@ -1161,7 +1183,11 @@ class PeruSpatialHubPanel(QDockWidget):
                 loaded_ok = True
 
             elif node_data.get("type") == "arcgis_service":
-                data = self.fetch_arcgis_json(url)
+                data = self.fetch_arcgis_json(
+                    url,
+                    timeout=6 if self._discovering_catalog else 15,
+                    attempts=1 if self._discovering_catalog else 2,
+                )
                 self.populate_arcgis_service_layers(item, node_data, data)
                 loaded_ok = True
 
@@ -1200,59 +1226,103 @@ class PeruSpatialHubPanel(QDockWidget):
                 self.filter_services()
 
     @staticmethod
-    def xml_local_name(tag):
-        return str(tag).rsplit("}", 1)[-1]
+    def parse_wms_layer_catalog(payload):
+        """Parse WMS layer names with Qt's streaming XML reader."""
+        reader = QXmlStreamReader(QByteArray(payload))
+        document_depth = 0
+        capability_depth = None
+        layer_stack = []
+        root_layers = []
+
+        while not reader.atEnd():
+            reader.readNext()
+
+            if reader.isDTD() or reader.isEntityReference():
+                raise RuntimeError(
+                    "GetCapabilities WMS contiene DTD o entidades XML no permitidas"
+                )
+
+            if reader.isStartElement():
+                document_depth += 1
+                element_name = reader.name().toString()
+
+                if element_name == "Capability":
+                    capability_depth = document_depth
+                    continue
+
+                if element_name == "Layer" and capability_depth is not None:
+                    layer_data = {
+                        "title": "",
+                        "name": "",
+                        "crs": [],
+                        "children": [],
+                        "_depth": document_depth,
+                    }
+                    if layer_stack:
+                        layer_stack[-1]["children"].append(layer_data)
+                    else:
+                        root_layers.append(layer_data)
+                    layer_stack.append(layer_data)
+                    continue
+
+                if (
+                    layer_stack
+                    and document_depth == layer_stack[-1]["_depth"] + 1
+                    and element_name in ("Title", "Name", "CRS", "SRS")
+                ):
+                    value = reader.readElementText().strip()
+                    if element_name == "Title":
+                        layer_stack[-1]["title"] = value
+                    elif element_name == "Name":
+                        layer_stack[-1]["name"] = value
+                    elif value:
+                        layer_stack[-1]["crs"].append(value)
+                    # readElementText leaves the reader on this element's end token.
+                    document_depth -= 1
+
+            elif reader.isEndElement():
+                element_name = reader.name().toString()
+                if (
+                    element_name == "Layer"
+                    and layer_stack
+                    and layer_stack[-1]["_depth"] == document_depth
+                ):
+                    layer_stack.pop()
+                if element_name == "Capability":
+                    capability_depth = None
+                document_depth -= 1
+
+        if reader.hasError():
+            raise RuntimeError(
+                f"GetCapabilities WMS no devolvió XML válido: {reader.errorString()}"
+            )
+        if not root_layers:
+            raise RuntimeError("GetCapabilities WMS no contiene un catálogo de capas")
+
+        for root_layer in root_layers:
+            stack = [root_layer]
+            while stack:
+                layer_data = stack.pop()
+                layer_data.pop("_depth", None)
+                stack.extend(layer_data["children"])
+        return root_layers[0]
 
     def populate_wms_layers(self, service_item, service_data, payload):
         """Populate a WMS catalog with importable named layers from GetCapabilities."""
-        try:
-            root = ET.fromstring(payload)
-        except ET.ParseError as exc:
-            raise RuntimeError(f"GetCapabilities WMS no devolvió XML válido: {exc}")
-
-        capability = next(
-            (node for node in root.iter() if self.xml_local_name(node.tag) == "Capability"),
-            None,
-        )
-        root_layer = next(
-            (
-                child for child in list(capability or [])
-                if self.xml_local_name(child.tag) == "Layer"
-            ),
-            None,
-        )
-        if root_layer is None:
-            raise RuntimeError("GetCapabilities WMS no contiene un catálogo de capas")
+        root_layer = self.parse_wms_layer_catalog(payload)
 
         service_url = _clean_rest_url(service_data["url"])
         institution = service_data["institution"]
         category = service_data["category"]
         created_layers = 0
 
-        def child_text(element, local_name):
-            child = next(
-                (
-                    node for node in list(element)
-                    if self.xml_local_name(node.tag) == local_name
-                ),
-                None,
-            )
-            return (child.text or "").strip() if child is not None else ""
-
-        def add_layer_node(xml_layer, parent_item, inherited_crs):
+        def add_layer_node(layer_data, parent_item, inherited_crs):
             nonlocal created_layers
-            title = child_text(xml_layer, "Title") or "Grupo WMS"
-            layer_name = child_text(xml_layer, "Name")
-            own_crs = [
-                (node.text or "").strip()
-                for node in list(xml_layer)
-                if self.xml_local_name(node.tag) in ("CRS", "SRS") and (node.text or "").strip()
-            ]
+            title = layer_data["title"] or "Grupo WMS"
+            layer_name = layer_data["name"]
+            own_crs = layer_data["crs"]
             available_crs = list(dict.fromkeys(own_crs or inherited_crs))
-            children = [
-                node for node in list(xml_layer)
-                if self.xml_local_name(node.tag) == "Layer"
-            ]
+            children = layer_data["children"]
 
             if layer_name:
                 tree_item = QTreeWidgetItem(parent_item)
@@ -1291,8 +1361,8 @@ class PeruSpatialHubPanel(QDockWidget):
                     })
                     parent_for_children = group_item
 
-            for child_layer in children:
-                add_layer_node(child_layer, parent_for_children, available_crs)
+            for child_layer_data in children:
+                add_layer_node(child_layer_data, parent_for_children, available_crs)
 
         add_layer_node(root_layer, service_item, [])
         if not created_layers:

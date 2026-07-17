@@ -17,3 +17,7 @@ Desktop.ini
 # Development Agent configurations
 .agents/
 .codex/
+
+# Local-only content
+Publicidad/
+push-changes.bat
